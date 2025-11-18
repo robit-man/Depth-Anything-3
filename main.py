@@ -61,15 +61,42 @@ def bootstrap_environment():
 
         try:
             # Upgrade pip first
+            print("\n📦 Upgrading pip...")
             subprocess.run([str(venv_pip), "install", "--upgrade", "pip"], check=True)
 
-            # Install torch first (large package)
+            # Install torch first (required by xformers and other deps)
             print("\n📦 Installing PyTorch (this is a large package)...")
             subprocess.run([str(venv_pip), "install", "torch>=2", "torchvision"], check=True)
 
-            # Install other requirements
-            print("\n📦 Installing other dependencies...")
-            subprocess.run([str(venv_pip), "install", "-r", str(requirements_file)], check=True)
+            # Read requirements and filter out xformers (we'll install it separately)
+            print("\n📦 Installing core dependencies...")
+            with open(requirements_file, 'r') as f:
+                requirements = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+
+            # Separate xformers from other requirements
+            other_reqs = [req for req in requirements if not req.startswith('xformers')]
+
+            # Install other requirements (without xformers)
+            for req in other_reqs:
+                if req and not req.startswith('torch'):  # Skip torch, already installed
+                    try:
+                        print(f"  Installing {req}...")
+                        subprocess.run([str(venv_pip), "install", req],
+                                     check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError as e:
+                        print(f"  ⚠️  Warning: Failed to install {req}, continuing...")
+
+            # Try to install xformers (optional, may fail on older GPUs)
+            print("\n📦 Installing xformers (optional)...")
+            print("   ℹ️  If this fails, the app will still work (see README FAQ)")
+            try:
+                subprocess.run([str(venv_pip), "install", "xformers"],
+                             check=True, timeout=300)
+                print("✓ xformers installed successfully")
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                print("⚠️  xformers installation failed or timed out")
+                print("   The application will work without it (with slightly reduced performance)")
+                print("   For older GPU support, see: https://github.com/ByteDance-Seed/Depth-Anything-3/issues/11")
 
             # Install the package itself
             print("\n📦 Installing depth-anything-3 package...")
@@ -81,10 +108,15 @@ def bootstrap_environment():
 
             # Create marker file
             marker_file.touch()
-            print("✓ All dependencies installed")
+            print("\n✓ Installation complete!")
+            print("   Note: Some optional packages may have been skipped")
 
         except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to install dependencies: {e}")
+            print(f"\n❌ Failed to install dependencies: {e}")
+            print("   Try manually installing with: pip install -r requirements.txt")
+            return False
+        except Exception as e:
+            print(f"\n❌ Unexpected error during installation: {e}")
             return False
     else:
         print("✓ Dependencies already installed")

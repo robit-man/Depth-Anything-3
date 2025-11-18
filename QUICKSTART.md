@@ -185,6 +185,25 @@ The application provides REST API endpoints:
 
 ## Troubleshooting
 
+### Installation Issues
+
+**Issue:** `xformers` fails to install with "No module named 'torch'" error
+
+**Solution:** This is now handled automatically! The updated `main.py`:
+1. Installs PyTorch first
+2. Then attempts to install xformers
+3. If xformers fails, continues anyway (it's optional)
+
+To start fresh if you hit issues:
+```bash
+./clean_and_restart.sh  # Clean up and start over
+# OR manually:
+rm -rf venv
+python3 main.py
+```
+
+**Note:** The app works fine without xformers, just with slightly reduced performance. See [Issue #11](https://github.com/ByteDance-Seed/Depth-Anything-3/issues/11) for older GPU support.
+
 ### Model Won't Load
 
 **Issue:** Model fails to download

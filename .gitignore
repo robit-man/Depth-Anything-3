@@ -34,6 +34,9 @@ input_images*/
 src/debug_main.py
 temp*.png
 /outputs
+/uploads
 venv
 FLASK*
-test_main.py
+clean_and*
+FIX_APP*
+test_main*
