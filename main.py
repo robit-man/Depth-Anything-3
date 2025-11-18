@@ -87,9 +87,11 @@ def bootstrap_environment():
                         print(f"  ⚠️  Warning: Failed to install {req}, continuing...")
 
             # Try to install xformers (optional, may fail on older GPUs)
+            # Install it BEFORE the package to avoid dependency conflicts
             print("\n📦 Installing xformers (optional)...")
             print("   ℹ️  If this fails, the app will still work (see README FAQ)")
             try:
+                # Install xformers with pip (now torch is already installed)
                 subprocess.run([str(venv_pip), "install", "xformers"],
                              check=True, timeout=300)
                 print("✓ xformers installed successfully")
@@ -98,9 +100,9 @@ def bootstrap_environment():
                 print("   The application will work without it (with slightly reduced performance)")
                 print("   For older GPU support, see: https://github.com/ByteDance-Seed/Depth-Anything-3/issues/11")
 
-            # Install the package itself
-            print("\n📦 Installing depth-anything-3 package...")
-            subprocess.run([str(venv_pip), "install", "-e", "."], check=True)
+            # Install the package itself WITHOUT dependencies (we already installed them)
+            print("\n📦 Installing depth-anything-3 package (without dependencies)...")
+            subprocess.run([str(venv_pip), "install", "-e", ".", "--no-deps"], check=True)
 
             # Install Flask (not in requirements.txt)
             print("\n📦 Installing Flask...")
