@@ -711,6 +711,7 @@ HTML_TEMPLATE = """
     <title>Depth Anything 3 - Point Cloud Studio</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -1099,9 +1100,47 @@ HTML_TEMPLATE = """
         <button onclick="toggleManualFloorSelection()" id="manual-floor-btn" disabled>
             <i class="fas fa-mouse-pointer"></i> <span id="manual-floor-text">Select Floor</span>
         </button>
+        <button onclick="toggleFPSMode()" id="fps-mode-btn" disabled>
+            <i class="fas fa-running"></i> <span id="fps-mode-text">FPS Mode</span>
+        </button>
         <button onclick="resetView()" id="reset-btn" disabled>
             <i class="fas fa-undo"></i> Reset View
         </button>
+    </div>
+
+    <!-- Pointer lock activation circle -->
+    <div id="pointer-lock-indicator" style="
+        position: fixed;
+        pointer-events: none;
+        display: none;
+        z-index: 10000;
+    ">
+        <svg width="80" height="80" style="transform: translate(-40px, -40px);">
+            <circle cx="40" cy="40" r="35" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="3"/>
+            <circle id="progress-circle" cx="40" cy="40" r="35" fill="none" stroke="rgba(59, 130, 246, 0.8)"
+                    stroke-width="3" stroke-dasharray="220" stroke-dashoffset="220"
+                    style="transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.1s linear;"/>
+            <text x="40" y="45" text-anchor="middle" fill="white" font-size="12" font-family="Arial">Hold</text>
+        </svg>
+    </div>
+
+    <!-- Pointer lock exit indicator -->
+    <div id="pointer-lock-active" style="
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        display: none;
+        z-index: 10000;
+    ">
+        <div style="
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.5);
+            border-radius: 50%;
+            background: rgba(255,255,255,0.1);
+        "></div>
     </div>
 
     <!-- Drag and drop overlay -->
@@ -1146,7 +1185,7 @@ HTML_TEMPLATE = """
 
     <script>
         // Three.js setup
-        let scene, camera, renderer, controls, pointCloud;
+        let scene, camera, renderer, controls, pointerLockControls, pointCloud;
         let currentJobId = null;
         let currentModel = null;
         let manualFloorMode = false;
@@ -1155,6 +1194,25 @@ HTML_TEMPLATE = """
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
         let originalPointCloudData = null;  // Store original point cloud data for color restoration
+
+        // FPS mode with PointerLockControls
+        let fpsModeActive = false;
+        let pointerLocked = false;
+        let holdStartTime = null;
+        let holdTimeout = null;
+        let holdAnimationFrame = null;
+        let cameraYaw = 0;
+        let cameraPitch = 0;
+        const CAMERA_HEIGHT = 1.6;
+        const WALK_SPEED = 3.5;
+        const VERTICAL_SPEED = 2.0;
+        const clock = new THREE.Clock();
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let moveUp = false;
+        let moveDown = false;
 
         function initThreeJS() {
             const container = document.getElementById('canvas-container');
@@ -1179,7 +1237,7 @@ HTML_TEMPLATE = """
             renderer.setPixelRatio(window.devicePixelRatio);
             container.appendChild(renderer.domElement);
 
-            // Controls
+            // OrbitControls (default)
             controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
             controls.dampingFactor = 0.05;
@@ -1209,7 +1267,27 @@ HTML_TEMPLATE = """
 
         function animate() {
             requestAnimationFrame(animate);
-            controls.update();
+
+            const delta = clock.getDelta();
+
+            if (fpsModeActive && pointerLocked && pointerLockControls) {
+                // FPS mode movement (WASD/Arrows with pointer lock)
+                const moveStep = WALK_SPEED * delta;
+                const verticalStep = VERTICAL_SPEED * delta;
+
+                if (moveForward) pointerLockControls.moveForward(moveStep);
+                if (moveBackward) pointerLockControls.moveForward(-moveStep);
+                if (moveLeft) pointerLockControls.moveRight(-moveStep);
+                if (moveRight) pointerLockControls.moveRight(moveStep);
+
+                const rig = pointerLockControls.getObject();
+                if (moveUp) rig.position.y += verticalStep;
+                if (moveDown) rig.position.y -= verticalStep;
+            } else {
+                // Normal orbit controls
+                controls.update();
+            }
+
             renderer.render(scene, camera);
         }
 
@@ -1246,85 +1324,272 @@ HTML_TEMPLATE = """
         }
 
         function setupKeyboardControls() {
-            // Keyboard movement
-            const moveSpeed = 0.1;  // Movement speed
-            const eyeLevel = 1.6;   // Eye level height (meters)
-
+            // Keyboard movement state tracking
             document.addEventListener('keydown', (e) => {
-                if (!camera) return;
-
-                // Get camera direction
-                const direction = new THREE.Vector3();
-                camera.getWorldDirection(direction);
-                direction.y = 0;  // Keep movement horizontal
-                direction.normalize();
-
-                // Get right vector (perpendicular to direction)
-                const right = new THREE.Vector3();
-                right.crossVectors(direction, new THREE.Vector3(0, 1, 0));
-                right.normalize();
-
-                let moved = false;
-
                 switch(e.key) {
-                    // Forward/Backward
                     case 'w':
                     case 'W':
                     case 'ArrowUp':
-                        camera.position.add(direction.multiplyScalar(moveSpeed));
-                        moved = true;
+                        moveForward = true;
                         break;
-
                     case 's':
                     case 'S':
                     case 'ArrowDown':
-                        camera.position.add(direction.multiplyScalar(-moveSpeed));
-                        moved = true;
+                        moveBackward = true;
                         break;
-
-                    // Left/Right
                     case 'a':
                     case 'A':
                     case 'ArrowLeft':
-                        camera.position.add(right.multiplyScalar(-moveSpeed));
-                        moved = true;
+                        moveLeft = true;
                         break;
-
                     case 'd':
                     case 'D':
                     case 'ArrowRight':
-                        camera.position.add(right.multiplyScalar(moveSpeed));
-                        moved = true;
+                        moveRight = true;
                         break;
-
-                    // Up/Down (Q/E keys)
                     case 'q':
                     case 'Q':
-                        camera.position.y += moveSpeed;
-                        moved = true;
+                        moveUp = true;
                         break;
-
                     case 'e':
                     case 'E':
-                        camera.position.y -= moveSpeed;
-                        moved = true;
+                        moveDown = true;
                         break;
-
-                    // Space: Reset to eye level
                     case ' ':
-                        camera.position.y = eyeLevel;
-                        moved = true;
+                        if (pointerLockControls && pointerLocked) {
+                            pointerLockControls.getObject().position.y = CAMERA_HEIGHT;
+                        } else {
+                            camera.position.y = CAMERA_HEIGHT;
+                        }
                         e.preventDefault();
                         break;
                 }
+            });
 
-                // Keep camera at eye level for WASD movement (unless using Q/E)
-                if (moved && !['q', 'Q', 'e', 'E', ' '].includes(e.key)) {
-                    camera.position.y = eyeLevel;
+            document.addEventListener('keyup', (e) => {
+                switch(e.key) {
+                    case 'w':
+                    case 'W':
+                    case 'ArrowUp':
+                        moveForward = false;
+                        break;
+                    case 's':
+                    case 'S':
+                    case 'ArrowDown':
+                        moveBackward = false;
+                        break;
+                    case 'a':
+                    case 'A':
+                    case 'ArrowLeft':
+                        moveLeft = false;
+                        break;
+                    case 'd':
+                    case 'D':
+                    case 'ArrowRight':
+                        moveRight = false;
+                        break;
+                    case 'q':
+                    case 'Q':
+                        moveUp = false;
+                        break;
+                    case 'e':
+                    case 'E':
+                        moveDown = false;
+                        break;
                 }
             });
 
             console.log('Keyboard controls enabled: WASD/Arrows=Move, Q/E=Up/Down, Space=Reset height');
+        }
+
+        function ensurePointerLockControls() {
+            if (pointerLockControls) return;
+
+            // Capture current camera transform before reparenting into controls
+            const worldPos = new THREE.Vector3();
+            const worldDir = new THREE.Vector3();
+            camera.getWorldPosition(worldPos);
+            camera.getWorldDirection(worldDir);
+
+            pointerLockControls = new THREE.PointerLockControls(camera, renderer.domElement);
+            pointerLockControls.pointerSpeed = 0.35;
+
+            const rig = pointerLockControls.getObject();
+            scene.add(rig);
+
+            pointerLockControls.addEventListener('lock', handlePointerLockEnter);
+            pointerLockControls.addEventListener('unlock', handlePointerLockExit);
+
+            // Initialize rig orientation to match current view
+            camera.position.set(0, 0, 0);
+            camera.rotation.set(0, 0, 0);
+
+            cameraYaw = Math.atan2(worldDir.x, worldDir.z);
+            cameraPitch = Math.asin(-worldDir.y);
+
+            rig.position.copy(worldPos);
+            rig.position.y = CAMERA_HEIGHT;
+            rig.rotation.y = cameraYaw;
+
+            const pitchObject = rig.children[0];
+            if (pitchObject) {
+                pitchObject.rotation.x = cameraPitch;
+            }
+        }
+
+        function syncPointerLockRig() {
+            if (!pointerLockControls) return;
+
+            const rig = pointerLockControls.getObject();
+            const pitchObject = rig.children[0];
+            const worldPos = new THREE.Vector3();
+            const worldDir = new THREE.Vector3();
+
+            camera.getWorldPosition(worldPos);
+            camera.getWorldDirection(worldDir);
+
+            cameraYaw = Math.atan2(worldDir.x, worldDir.z);
+            cameraPitch = Math.asin(-worldDir.y);
+
+            rig.position.copy(worldPos);
+            rig.position.y = CAMERA_HEIGHT;
+            rig.rotation.y = cameraYaw;
+
+            if (pitchObject) {
+                pitchObject.rotation.x = cameraPitch;
+            }
+        }
+
+        function handlePointerLockEnter() {
+            pointerLocked = true;
+            document.getElementById('pointer-lock-active').style.display = 'block';
+
+            controls.enabled = false;
+            document.getElementById('model-status-text').textContent = 'First-Person Mode (ESC to exit)';
+            console.log('Pointer lock activated - WASD/Arrows to move, mouse to look, ESC to exit');
+        }
+
+        function restoreCameraAfterPointerLock() {
+            if (!pointerLockControls) return;
+
+            const rig = pointerLockControls.getObject();
+            const pitchObject = rig.children[0];
+
+            const worldPos = new THREE.Vector3();
+            const worldQuat = new THREE.Quaternion();
+            camera.getWorldPosition(worldPos);
+            camera.getWorldQuaternion(worldQuat);
+
+            if (pitchObject && pitchObject.children.includes(camera)) {
+                pitchObject.remove(camera);
+            }
+
+            scene.add(camera);
+            camera.position.copy(worldPos);
+            camera.quaternion.copy(worldQuat);
+
+            scene.remove(rig);
+            pointerLockControls.removeEventListener('lock', handlePointerLockEnter);
+            pointerLockControls.removeEventListener('unlock', handlePointerLockExit);
+            pointerLockControls.dispose();
+            pointerLockControls = null;
+
+            controls.enabled = true;
+
+            // Re-aim orbit target in front of camera so there is no explicit scene target
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            controls.target.copy(camera.position.clone().add(forward));
+            controls.update();
+        }
+
+        function handlePointerLockExit() {
+            if (!pointerLocked && !pointerLockControls) return;
+
+            pointerLocked = false;
+            document.getElementById('pointer-lock-active').style.display = 'none';
+            restoreCameraAfterPointerLock();
+
+            if (fpsModeActive) {
+                fpsModeActive = false;
+                updateFPSButtonState();
+            }
+
+            document.getElementById('model-status-text').textContent = 'Model: Ready';
+            console.log('Pointer lock deactivated');
+        }
+
+        function exitPointerLock() {
+            if (document.pointerLockElement) {
+                document.exitPointerLock();
+            } else {
+                handlePointerLockExit();
+            }
+        }
+
+        function requestPointerLock() {
+            ensurePointerLockControls();
+            syncPointerLockRig();
+
+            if (pointerLockControls) {
+                pointerLockControls.lock();
+            }
+        }
+
+        function setupPointerLockControls() {
+            const indicator = document.getElementById('pointer-lock-indicator');
+            const progressCircle = document.getElementById('progress-circle');
+            const circumference = 220; // Match stroke-dasharray
+
+            // Start hold on mousedown (not in floor selection mode)
+            renderer.domElement.addEventListener('mousedown', (e) => {
+                if (e.button === 0 && !manualFloorMode && !pointerLocked) {
+                    holdStartTime = Date.now();
+
+                    // Position indicator at cursor
+                    indicator.style.left = e.clientX + 'px';
+                    indicator.style.top = e.clientY + 'px';
+                    indicator.style.display = 'block';
+
+                    // Animate progress circle
+                    const animateProgress = () => {
+                        const elapsed = Date.now() - holdStartTime;
+                        const progress = Math.min(elapsed / 3000, 1); // 3 seconds
+                        const offset = circumference - (progress * circumference);
+                        progressCircle.style.strokeDashoffset = offset;
+
+                        if (progress < 1) {
+                            holdAnimationFrame = requestAnimationFrame(animateProgress);
+                        }
+                    };
+                    animateProgress();
+
+                    // Request pointer lock after 3 seconds
+                    holdTimeout = setTimeout(() => {
+                        indicator.style.display = 'none';
+                        requestPointerLock();
+                    }, 3000);
+                }
+            });
+
+            // Cancel hold on mouseup or mouseleave
+            const cancelHold = () => {
+                if (holdTimeout) {
+                    clearTimeout(holdTimeout);
+                    holdTimeout = null;
+                }
+                if (holdAnimationFrame) {
+                    cancelAnimationFrame(holdAnimationFrame);
+                    holdAnimationFrame = null;
+                }
+                indicator.style.display = 'none';
+                progressCircle.style.strokeDashoffset = circumference;
+            };
+
+            renderer.domElement.addEventListener('mouseup', cancelHold);
+            renderer.domElement.addEventListener('mouseleave', cancelHold);
+
+            console.log('Pointer lock controls ready: Hold mouse button for 3 seconds to activate');
         }
 
         // Model selection
@@ -1494,6 +1759,7 @@ HTML_TEMPLATE = """
                         document.getElementById('export-btn').disabled = false;
                         document.getElementById('floor-btn').disabled = false;
                         document.getElementById('manual-floor-btn').disabled = false;
+                        document.getElementById('fps-mode-btn').disabled = false;
                         document.getElementById('reset-btn').disabled = false;
                     } else if (data.status === 'error') {
                         clearInterval(interval);
@@ -1851,8 +2117,37 @@ HTML_TEMPLATE = """
 
         // Reset view
         function resetView() {
-            camera.position.set(0, 1.6, 5);  // Reset to eye level
-            controls.target.set(0, 1.6, 0);  // Look at eye level
+            camera.position.set(0, CAMERA_HEIGHT, 5);  // Reset to eye level
+            controls.target.set(0, CAMERA_HEIGHT, 0);  // Look at eye level
+        }
+
+        // Toggle FPS mode with dolly camera
+        function toggleFPSMode() {
+            fpsModeActive = !fpsModeActive;
+            updateFPSButtonState();
+
+            if (fpsModeActive) {
+                requestPointerLock();
+                console.log('FPS Mode activated');
+            } else {
+                exitPointerLock();
+                console.log('FPS Mode deactivated');
+            }
+        }
+
+        function updateFPSButtonState() {
+            const btn = document.getElementById('fps-mode-btn');
+            const text = document.getElementById('fps-mode-text');
+
+            if (fpsModeActive) {
+                btn.style.background = 'rgba(59, 130, 246, 0.5)';
+                btn.style.borderColor = 'rgba(59, 130, 246, 0.8)';
+                text.textContent = 'Exit FPS';
+            } else {
+                btn.style.background = 'rgba(16, 185, 129, 0.2)';
+                btn.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+                text.textContent = 'FPS Mode';
+            }
         }
 
         function setupModalCloseHandler() {
@@ -1885,6 +2180,7 @@ HTML_TEMPLATE = """
             setupDragAndDrop();
             setupModalCloseHandler();
             setupKeyboardControls();
+            setupPointerLockControls();
             setupManualFloorSelection();
             console.log('Event handlers setup complete');
 
