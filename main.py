@@ -523,15 +523,46 @@ def process_file():
 
     def process_async():
         try:
-            # Open image
-            img = Image.open(filepath).convert('RGB')
+            # Check if file is video or image
+            file_ext = filepath.suffix.lower()
+            is_video = file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
 
-            # Process with DA3
-            prediction = state.model.inference(
-                image=[img],
-                process_res=resolution,
-                num_max_points=max_points
-            )
+            if is_video:
+                # Process video - extract frames
+                from moviepy.editor import VideoFileClip
+
+                clip = VideoFileClip(str(filepath))
+                fps = clip.fps
+                duration = clip.duration
+
+                # Extract frames (sample every 0.5 seconds for performance)
+                sample_rate = max(1, int(fps * 0.5))  # Sample every 0.5 seconds
+                frames = []
+
+                for i, frame in enumerate(clip.iter_frames()):
+                    if i % sample_rate == 0:
+                        frames.append(Image.fromarray(frame))
+                    if len(frames) >= 20:  # Limit to 20 frames max
+                        break
+
+                clip.close()
+
+                # Process frames with DA3
+                prediction = state.model.inference(
+                    image=frames,
+                    process_res=resolution,
+                    num_max_points=max_points
+                )
+            else:
+                # Process single image
+                img = Image.open(filepath).convert('RGB')
+
+                # Process with DA3
+                prediction = state.model.inference(
+                    image=[img],
+                    process_res=resolution,
+                    num_max_points=max_points
+                )
 
             # Extract point cloud data from depth maps and images
             # Use the helper function from api_endpoints if available
@@ -1063,7 +1094,10 @@ HTML_TEMPLATE = """
             <i class="fas fa-file-export"></i> Export GLB
         </button>
         <button onclick="alignFloor()" id="floor-btn" disabled>
-            <i class="fas fa-align-center"></i> Align with Floor
+            <i class="fas fa-align-center"></i> Auto Floor
+        </button>
+        <button onclick="toggleManualFloorSelection()" id="manual-floor-btn" disabled>
+            <i class="fas fa-mouse-pointer"></i> <span id="manual-floor-text">Select Floor</span>
         </button>
         <button onclick="resetView()" id="reset-btn" disabled>
             <i class="fas fa-undo"></i> Reset View
@@ -1115,6 +1149,11 @@ HTML_TEMPLATE = """
         let scene, camera, renderer, controls, pointCloud;
         let currentJobId = null;
         let currentModel = null;
+        let manualFloorMode = false;
+        let selectedPoints = [];
+        let highlightedPoints = null;
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
 
         function initThreeJS() {
             const container = document.getElementById('canvas-container');
@@ -1131,7 +1170,7 @@ HTML_TEMPLATE = """
                 0.1,
                 1000
             );
-            camera.position.set(0, 2, 5);
+            camera.position.set(0, 1.6, 5);  // Start at eye level (1.6m)
 
             // Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1179,26 +1218,113 @@ HTML_TEMPLATE = """
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // Drag and drop
-        document.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            document.getElementById('drag-overlay').classList.add('active');
-        });
+        function setupDragAndDrop() {
+            // Drag and drop
+            document.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                const overlay = document.getElementById('drag-overlay');
+                if (overlay) overlay.classList.add('active');
+            });
 
-        document.addEventListener('dragleave', (e) => {
-            if (e.target === document.body || e.target === document.documentElement) {
-                document.getElementById('drag-overlay').classList.remove('active');
-            }
-        });
+            document.addEventListener('dragleave', (e) => {
+                if (e.target === document.body || e.target === document.documentElement) {
+                    const overlay = document.getElementById('drag-overlay');
+                    if (overlay) overlay.classList.remove('active');
+                }
+            });
 
-        document.addEventListener('drop', (e) => {
-            e.preventDefault();
-            document.getElementById('drag-overlay').classList.remove('active');
+            document.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const overlay = document.getElementById('drag-overlay');
+                if (overlay) overlay.classList.remove('active');
 
-            if (e.dataTransfer.files.length > 0) {
-                handleFileSelect(e.dataTransfer.files[0]);
-            }
-        });
+                if (e.dataTransfer.files.length > 0) {
+                    handleFileSelect(e.dataTransfer.files[0]);
+                }
+            });
+        }
+
+        function setupKeyboardControls() {
+            // Keyboard movement
+            const moveSpeed = 0.1;  // Movement speed
+            const eyeLevel = 1.6;   // Eye level height (meters)
+
+            document.addEventListener('keydown', (e) => {
+                if (!camera) return;
+
+                // Get camera direction
+                const direction = new THREE.Vector3();
+                camera.getWorldDirection(direction);
+                direction.y = 0;  // Keep movement horizontal
+                direction.normalize();
+
+                // Get right vector (perpendicular to direction)
+                const right = new THREE.Vector3();
+                right.crossVectors(direction, new THREE.Vector3(0, 1, 0));
+                right.normalize();
+
+                let moved = false;
+
+                switch(e.key) {
+                    // Forward/Backward
+                    case 'w':
+                    case 'W':
+                    case 'ArrowUp':
+                        camera.position.add(direction.multiplyScalar(moveSpeed));
+                        moved = true;
+                        break;
+
+                    case 's':
+                    case 'S':
+                    case 'ArrowDown':
+                        camera.position.add(direction.multiplyScalar(-moveSpeed));
+                        moved = true;
+                        break;
+
+                    // Left/Right
+                    case 'a':
+                    case 'A':
+                    case 'ArrowLeft':
+                        camera.position.add(right.multiplyScalar(-moveSpeed));
+                        moved = true;
+                        break;
+
+                    case 'd':
+                    case 'D':
+                    case 'ArrowRight':
+                        camera.position.add(right.multiplyScalar(moveSpeed));
+                        moved = true;
+                        break;
+
+                    // Up/Down (Q/E keys)
+                    case 'q':
+                    case 'Q':
+                        camera.position.y += moveSpeed;
+                        moved = true;
+                        break;
+
+                    case 'e':
+                    case 'E':
+                        camera.position.y -= moveSpeed;
+                        moved = true;
+                        break;
+
+                    // Space: Reset to eye level
+                    case ' ':
+                        camera.position.y = eyeLevel;
+                        moved = true;
+                        e.preventDefault();
+                        break;
+                }
+
+                // Keep camera at eye level for WASD movement (unless using Q/E)
+                if (moved && !['q', 'Q', 'e', 'E', ' '].includes(e.key)) {
+                    camera.position.y = eyeLevel;
+                }
+            });
+
+            console.log('Keyboard controls enabled: WASD/Arrows=Move, Q/E=Up/Down, Space=Reset height');
+        }
 
         // Model selection
         async function showModelSelector() {
@@ -1366,6 +1492,7 @@ HTML_TEMPLATE = """
                         document.getElementById('model-status-text').textContent = 'Model: Ready';
                         document.getElementById('export-btn').disabled = false;
                         document.getElementById('floor-btn').disabled = false;
+                        document.getElementById('manual-floor-btn').disabled = false;
                         document.getElementById('reset-btn').disabled = false;
                     } else if (data.status === 'error') {
                         clearInterval(interval);
@@ -1423,7 +1550,7 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Floor alignment
+        // Floor alignment (automatic)
         async function alignFloor() {
             try {
                 document.getElementById('model-status-text').textContent = 'Aligning floor...';
@@ -1445,6 +1572,256 @@ HTML_TEMPLATE = """
             }
         }
 
+        // Manual floor selection
+        function toggleManualFloorSelection() {
+            manualFloorMode = !manualFloorMode;
+            const btn = document.getElementById('manual-floor-btn');
+            const text = document.getElementById('manual-floor-text');
+
+            if (manualFloorMode) {
+                btn.style.background = 'rgba(59, 130, 246, 0.5)';
+                btn.style.borderColor = 'rgba(59, 130, 246, 0.8)';
+                text.textContent = 'Click Floor';
+                document.getElementById('model-status-text').textContent = 'Click on floor surface...';
+                console.log('Manual floor selection mode: ON');
+            } else {
+                btn.style.background = 'rgba(16, 185, 129, 0.2)';
+                btn.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+                text.textContent = 'Select Floor';
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+                clearHighlightedPoints();
+                selectedPoints = [];
+                console.log('Manual floor selection mode: OFF');
+            }
+        }
+
+        function onMouseClick(event) {
+            if (!manualFloorMode || !pointCloud) return;
+
+            // Calculate mouse position in normalized device coordinates
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Update raycaster
+            raycaster.setFromCamera(mouse, camera);
+
+            // Check for intersections
+            const intersects = raycaster.intersectObject(pointCloud);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const point = intersect.point;
+
+                console.log('Clicked point:', point);
+
+                // Find nearby points
+                findNearbyPoints(point);
+
+                // Fit plane and align
+                if (selectedPoints.length > 100) {
+                    applyManualFloorAlignment();
+                }
+            }
+        }
+
+        function findNearbyPoints(clickedPoint) {
+            if (!pointCloud) return;
+
+            const positions = pointCloud.geometry.attributes.position.array;
+            const colors = pointCloud.geometry.attributes.color.array;
+
+            const searchRadius = 0.5;  // 0.5 meter radius
+            const nearby = [];
+            const nearbyIndices = [];
+
+            // Find all points within radius
+            for (let i = 0; i < positions.length; i += 3) {
+                const x = positions[i];
+                const y = positions[i + 1];
+                const z = positions[i + 2];
+
+                const dx = x - clickedPoint.x;
+                const dy = y - clickedPoint.y;
+                const dz = z - clickedPoint.z;
+                const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                if (distance < searchRadius) {
+                    nearby.push(new THREE.Vector3(x, y, z));
+                    nearbyIndices.push(i / 3);
+                }
+            }
+
+            selectedPoints = nearby;
+
+            console.log(`Found ${nearby.length} nearby points within ${searchRadius}m`);
+
+            // Highlight selected points
+            highlightPoints(nearbyIndices, colors);
+        }
+
+        function highlightPoints(indices, originalColors) {
+            if (!pointCloud) return;
+
+            const colors = pointCloud.geometry.attributes.color.array;
+
+            // Reset all colors first
+            for (let i = 0; i < colors.length; i++) {
+                colors[i] = originalColors[i];
+            }
+
+            // Highlight selected points (white)
+            indices.forEach(idx => {
+                colors[idx * 3] = 1.0;      // R
+                colors[idx * 3 + 1] = 1.0;  // G
+                colors[idx * 3 + 2] = 1.0;  // B
+            });
+
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+
+            document.getElementById('model-status-text').textContent =
+                `Selected ${indices.length} points. Processing...`;
+        }
+
+        function clearHighlightedPoints() {
+            if (!pointCloud || !state.current_pointcloud) return;
+
+            const colors = pointCloud.geometry.attributes.color.array;
+            const originalColors = state.current_pointcloud.colors;
+
+            // Restore original colors
+            for (let i = 0; i < originalColors.length; i++) {
+                for (let j = 0; j < 3; j++) {
+                    colors[i * 3 + j] = originalColors[i][j] / 255;
+                }
+            }
+
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+        }
+
+        function fitPlaneToPoints(points) {
+            // Fit plane using least squares
+            // Plane equation: ax + by + cz + d = 0
+
+            const n = points.length;
+            if (n < 3) return null;
+
+            // Calculate centroid
+            const centroid = new THREE.Vector3();
+            points.forEach(p => centroid.add(p));
+            centroid.divideScalar(n);
+
+            // Build covariance matrix
+            let xx = 0, xy = 0, xz = 0;
+            let yy = 0, yz = 0, zz = 0;
+
+            points.forEach(p => {
+                const dx = p.x - centroid.x;
+                const dy = p.y - centroid.y;
+                const dz = p.z - centroid.z;
+
+                xx += dx * dx;
+                xy += dx * dy;
+                xz += dx * dz;
+                yy += dy * dy;
+                yz += dy * dz;
+                zz += dz * dz;
+            });
+
+            // Find eigenvector corresponding to smallest eigenvalue
+            // Simplified: assume normal is mostly vertical
+            // Use cross product of two vectors in the plane
+
+            // Get two vectors from centroid to sample points
+            const v1 = new THREE.Vector3().subVectors(points[0], centroid);
+            const v2 = new THREE.Vector3().subVectors(points[Math.floor(n/2)], centroid);
+
+            // Normal is cross product
+            const normal = new THREE.Vector3().crossVectors(v1, v2);
+            normal.normalize();
+
+            // Ensure normal points upward
+            if (normal.y < 0) {
+                normal.multiplyScalar(-1);
+            }
+
+            // Calculate d coefficient
+            const d = -normal.dot(centroid);
+
+            return { normal, d, centroid };
+        }
+
+        function applyManualFloorAlignment() {
+            if (selectedPoints.length < 100) {
+                alert('Not enough points selected. Click on a larger floor area.');
+                return;
+            }
+
+            document.getElementById('model-status-text').textContent = 'Fitting plane...';
+
+            // Fit plane to selected points
+            const plane = fitPlaneToPoints(selectedPoints);
+
+            if (!plane) {
+                alert('Failed to fit plane to selected points.');
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+                return;
+            }
+
+            console.log('Fitted plane normal:', plane.normal);
+            console.log('Plane centroid:', plane.centroid);
+
+            // Create rotation to align plane with XZ (y=0)
+            const targetNormal = new THREE.Vector3(0, 1, 0);
+            const quaternion = new THREE.Quaternion();
+            quaternion.setFromUnitVectors(plane.normal, targetNormal);
+
+            // Apply rotation to all points
+            const positions = pointCloud.geometry.attributes.position.array;
+            const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
+
+            for (let i = 0; i < positions.length; i += 3) {
+                const point = new THREE.Vector3(
+                    positions[i],
+                    positions[i + 1],
+                    positions[i + 2]
+                );
+
+                point.applyMatrix4(rotationMatrix);
+
+                positions[i] = point.x;
+                positions[i + 1] = point.y;
+                positions[i + 2] = point.z;
+            }
+
+            // Find lowest point and translate to y=0
+            let minY = Infinity;
+            for (let i = 1; i < positions.length; i += 3) {
+                if (positions[i] < minY) minY = positions[i];
+            }
+
+            for (let i = 1; i < positions.length; i += 3) {
+                positions[i] -= minY;
+            }
+
+            pointCloud.geometry.attributes.position.needsUpdate = true;
+            pointCloud.geometry.computeBoundingSphere();
+
+            // Update stored point cloud
+            const newVertices = [];
+            for (let i = 0; i < positions.length; i += 3) {
+                newVertices.push([positions[i], positions[i + 1], positions[i + 2]]);
+            }
+            state.current_pointcloud.vertices = newVertices;
+
+            // Exit selection mode
+            toggleManualFloorSelection();
+
+            alert(`Floor aligned! Used ${selectedPoints.length} points for plane fitting.`);
+            document.getElementById('model-status-text').textContent = 'Model: Ready';
+
+            console.log('Manual floor alignment complete');
+        }
+
         // Export GLB
         async function exportGLB() {
             try {
@@ -1462,22 +1839,46 @@ HTML_TEMPLATE = """
 
         // Reset view
         function resetView() {
-            camera.position.set(0, 2, 5);
-            controls.target.set(0, 0, 0);
+            camera.position.set(0, 1.6, 5);  // Reset to eye level
+            controls.target.set(0, 1.6, 0);  // Look at eye level
         }
 
-        // Close modal when clicking outside
-        window.addEventListener('click', (e) => {
-            const modal = document.getElementById('model-modal');
-            if (e.target === modal) {
-                closeModelSelector();
+        function setupModalCloseHandler() {
+            // Close modal when clicking outside
+            window.addEventListener('click', (e) => {
+                const modal = document.getElementById('model-modal');
+                if (modal && e.target === modal) {
+                    closeModelSelector();
+                }
+            });
+        }
+
+        function setupManualFloorSelection() {
+            // Add click listener for manual floor selection
+            if (renderer && renderer.domElement) {
+                renderer.domElement.addEventListener('click', onMouseClick, false);
+                console.log('Manual floor selection click handler registered');
             }
-        });
+        }
 
         // Initialize on load
         window.addEventListener('DOMContentLoaded', () => {
+            console.log('Initializing Depth Anything 3 UI...');
+
+            // Initialize Three.js scene
             initThreeJS();
+            console.log('Three.js scene initialized');
+
+            // Setup event handlers
+            setupDragAndDrop();
+            setupModalCloseHandler();
+            setupKeyboardControls();
+            setupManualFloorSelection();
+            console.log('Event handlers setup complete');
+
+            // Update model status
             updateModelStatus();
+            console.log('UI initialization complete');
         });
     </script>
 </body>
