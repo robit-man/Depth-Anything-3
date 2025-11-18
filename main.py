@@ -522,32 +522,46 @@ def process_file():
     filepath = Path(app.config['UPLOAD_FOLDER']) / filename
     file.save(filepath)
 
-    # If GLB, bypass inference and just load the point cloud
-    if filepath.suffix.lower() == ".glb":
+    # If GLB/GLTF/pointcloud JSON, bypass inference and just load the point cloud
+    suffix = filepath.suffix.lower()
+    if suffix in {".glb", ".gltf", ".json"}:
         try:
-            mesh = trimesh.load(str(filepath))
-            vertices = []
-            colors = []
-
-            if isinstance(mesh, trimesh.Scene):
-                for geom in mesh.geometry.values():
-                    if isinstance(geom, trimesh.points.PointCloud):
-                        vertices.append(geom.vertices)
-                        if geom.colors is not None:
-                            colors.append(geom.colors[:, :3])
-            elif isinstance(mesh, trimesh.points.PointCloud):
-                vertices.append(mesh.vertices)
-                if mesh.colors is not None:
-                    colors.append(mesh.colors[:, :3])
-
-            if not vertices:
-                return jsonify({"error": "No point data found in GLB"}), 400
-
-            vertices = np.vstack(vertices)
-            if colors:
-                colors = np.vstack(colors)
+            if suffix == ".json":
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+                if "vertices" in data and "colors" in data:
+                    vertices = np.array(data["vertices"], dtype=np.float32)
+                    colors = np.array(data["colors"], dtype=np.float32)
+                else:
+                    return jsonify({"error": "JSON missing vertices/colors"}), 400
             else:
-                colors = np.ones_like(vertices) * 255
+                mesh = trimesh.load(str(filepath))
+                vertices = []
+                colors = []
+
+                if isinstance(mesh, trimesh.Scene):
+                    for geom in mesh.geometry.values():
+                        if isinstance(geom, trimesh.points.PointCloud):
+                            vertices.append(geom.vertices)
+                            if geom.colors is not None:
+                                colors.append(geom.colors[:, :3])
+                elif isinstance(mesh, trimesh.points.PointCloud):
+                    vertices.append(mesh.vertices)
+                    if mesh.colors is not None:
+                        colors.append(mesh.colors[:, :3])
+
+                if not vertices:
+                    return jsonify({"error": "No point data found in GLB"}), 400
+
+                vertices = np.vstack(vertices)
+                if colors:
+                    colors = np.vstack(colors)
+                else:
+                    colors = np.ones_like(vertices) * 255
+
+            # Normalize colors if needed
+            if colors.max() <= 1.0:
+                colors = (colors * 255.0).clip(0, 255)
 
             state.current_pointcloud = {
                 "vertices": vertices.tolist(),
@@ -560,8 +574,8 @@ def process_file():
             }
             return jsonify({"status": "completed", "pointcloud": state.current_pointcloud})
         except Exception as e:
-            print(f"❌ GLB ingest failed: {e}")
-            return jsonify({"error": f"Failed to load GLB: {e}"}), 500
+            print(f"❌ GLB/JSON ingest failed: {e}")
+            return jsonify({"error": f"Failed to load point cloud: {e}"}), 500
 
     # Otherwise, require model readiness for inference
     if not state.model_ready:
@@ -849,6 +863,7 @@ HTML_TEMPLATE = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/FlyControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -1318,7 +1333,7 @@ HTML_TEMPLATE = """
     </div>
 
     <!-- Hidden file input -->
-    <input type="file" id="file-input" accept="image/*,video/*" onchange="handleFileSelect(this.files[0])">
+    <input type="file" id="file-input" accept="image/*,video/*,.glb,.gltf,.json" onchange="handleFileSelect(this.files[0])">
 
     <script>
         // Three.js setup
@@ -1850,10 +1865,18 @@ HTML_TEMPLATE = """
             }
         }
 
-        // File processing
+        // File processing (images/videos go to backend; GLB/GLTF/JSON load locally)
         async function handleFileSelect(file) {
             if (!file) return;
+            const lowerName = file.name.toLowerCase();
+            const isLocalPointCloud = lowerName.endsWith('.glb') || lowerName.endsWith('.gltf') || lowerName.endsWith('.json');
 
+            if (isLocalPointCloud) {
+                loadLocalGLB(file);
+                return;
+            }
+
+            // Otherwise: send to backend for inference
             // Check if model is ready
             const statusResponse = await fetch('/api/model_status');
             const statusData = await statusResponse.json();
@@ -1878,7 +1901,17 @@ HTML_TEMPLATE = """
 
                 const data = await response.json();
 
-                if (response.ok) {
+                if (response.ok && data.pointcloud) {
+                    // Direct load (e.g., server-side GLB/JSON upload bypassing inference)
+                    loadPointCloud(data.pointcloud);
+                    document.getElementById('model-status-text').textContent = 'Model: Ready';
+                    document.getElementById('export-btn').disabled = false;
+                    document.getElementById('floor-btn').disabled = false;
+                    document.getElementById('manual-floor-btn').disabled = false;
+                    document.getElementById('fps-mode-btn').disabled = false;
+                    document.getElementById('reset-btn').disabled = false;
+                    return;
+                } else if (response.ok && data.job_id) {
                     currentJobId = data.job_id;
                     document.getElementById('model-status-text').textContent = 'Processing...';
                     pollJobStatus();
@@ -1891,6 +1924,67 @@ HTML_TEMPLATE = """
                 alert('Failed to upload file. Check console for details.');
                 document.getElementById('model-status-text').textContent = 'Model: Ready';
             }
+        }
+
+        function loadLocalGLB(file) {
+            document.getElementById('model-status-text').textContent = 'Loading local point cloud...';
+            const loader = new THREE.GLTFLoader();
+            const url = URL.createObjectURL(file);
+
+            loader.load(url, (gltf) => {
+                // Remove existing point cloud
+                if (pointCloud) {
+                    scene.remove(pointCloud);
+                    pointCloud = null;
+                }
+
+                let loadedPoints = null;
+                gltf.scene.traverse((child) => {
+                    if (child.isPoints) {
+                        const clone = child.clone();
+                        if (clone.material && clone.material.size === undefined) {
+                            clone.material.size = 0.01;
+                        }
+                        loadedPoints = loadedPoints || clone;
+                    } else if (child.isMesh) {
+                        const geom = child.geometry;
+                        if (!geom) return;
+                        const hasColor = !!geom.attributes.color;
+                        const mat = new THREE.PointsMaterial({ size: 0.01, vertexColors: hasColor, color: hasColor ? undefined : 0xffffff });
+                        const pts = new THREE.Points(geom, mat);
+                        loadedPoints = loadedPoints || pts;
+                    }
+                });
+
+                if (!loadedPoints) {
+                    // Fallback: use the full scene
+                    loadedPoints = gltf.scene;
+                }
+
+                pointCloud = loadedPoints;
+                scene.add(pointCloud);
+
+                // Update UI/state
+                // Try to count points if geometry exists
+                let numPoints = 0;
+                if (pointCloud.isPoints && pointCloud.geometry && pointCloud.geometry.attributes.position) {
+                    numPoints = pointCloud.geometry.attributes.position.count;
+                }
+                document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+                document.getElementById('export-btn').disabled = false;
+                document.getElementById('floor-btn').disabled = false;
+                document.getElementById('manual-floor-btn').disabled = false;
+                document.getElementById('fps-mode-btn').disabled = false;
+                document.getElementById('reset-btn').disabled = false;
+
+                URL.revokeObjectURL(url);
+            }, undefined, (err) => {
+                console.error('GLB load error:', err);
+                alert('Failed to load GLB. See console for details.');
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+                URL.revokeObjectURL(url);
+            });
         }
 
         async function pollJobStatus() {
@@ -2028,7 +2122,7 @@ HTML_TEMPLATE = """
             raycaster.setFromCamera(mouse, camera);
 
             // Check for intersections
-            const intersects = raycaster.intersectObject(pointCloud);
+            const intersects = raycaster.intersectObject(pointCloud, true);
 
             if (intersects.length > 0) {
                 const intersect = intersects[0];
