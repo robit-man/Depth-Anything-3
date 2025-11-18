@@ -533,20 +533,73 @@ def process_file():
                 num_max_points=max_points
             )
 
-            # Extract point cloud data
-            vertices = prediction['points_3d'][0].tolist()  # [[x, y, z], ...]
-            colors = prediction['colors'][0].tolist()  # [[r, g, b], ...]
+            # Extract point cloud data from depth maps and images
+            # Use the helper function from api_endpoints if available
+            try:
+                from api_endpoints import prediction_to_point_cloud_json
+                point_cloud = prediction_to_point_cloud_json(prediction, max_points=max_points)
 
-            # Store in state
-            state.current_pointcloud = {
-                "vertices": vertices,
-                "colors": colors,
-                "metadata": {
-                    "num_points": len(vertices),
-                    "resolution": resolution,
-                    "filename": filename
+                state.current_pointcloud = {
+                    "vertices": point_cloud["vertices"],
+                    "colors": point_cloud["colors"],
+                    "metadata": {
+                        "num_points": point_cloud["metadata"]["num_points"],
+                        "resolution": resolution,
+                        "filename": filename
+                    }
                 }
-            }
+            except ImportError:
+                # Fallback: manual extraction
+                points_list = []
+                colors_list = []
+
+                for i in range(len(prediction.depth)):
+                    depth = prediction.depth[i]
+                    image = prediction.processed_images[i]
+
+                    # Get intrinsics
+                    ixt = prediction.intrinsics[i]
+                    fx, fy = ixt[0, 0], ixt[1, 1]
+                    cx, cy = ixt[0, 2], ixt[1, 2]
+
+                    # Create mesh grid
+                    h, w = depth.shape
+                    y_coords, x_coords = np.mgrid[0:h, 0:w]
+
+                    # Unproject to 3D
+                    x3d = (x_coords - cx) * depth / fx
+                    y3d = (y_coords - cy) * depth / fy
+                    z3d = depth
+
+                    points = np.stack([x3d, y3d, z3d], axis=-1).reshape(-1, 3)
+                    colors = image.reshape(-1, 3)
+
+                    # Filter valid points
+                    valid = depth.reshape(-1) > 0
+                    points = points[valid]
+                    colors = colors[valid]
+
+                    points_list.append(points)
+                    colors_list.append(colors)
+
+                all_points = np.vstack(points_list)
+                all_colors = np.vstack(colors_list)
+
+                # Subsample if needed
+                if max_points and len(all_points) > max_points:
+                    indices = np.random.choice(len(all_points), max_points, replace=False)
+                    all_points = all_points[indices]
+                    all_colors = all_colors[indices]
+
+                state.current_pointcloud = {
+                    "vertices": all_points.tolist(),
+                    "colors": all_colors.tolist(),
+                    "metadata": {
+                        "num_points": len(all_points),
+                        "resolution": resolution,
+                        "filename": filename
+                    }
+                }
 
             state.processing_jobs[job_id] = {
                 "status": "completed",
@@ -555,6 +608,8 @@ def process_file():
 
         except Exception as e:
             print(f"❌ Processing error: {e}")
+            import traceback
+            traceback.print_exc()
             state.processing_jobs[job_id] = {
                 "status": "error",
                 "error": str(e)
@@ -1160,6 +1215,15 @@ HTML_TEMPLATE = """
             data.models.forEach(model => {
                 const card = document.createElement('div');
                 card.className = 'model-card' + (model.current ? ' current' : '') + (model.downloaded ? ' downloaded' : '');
+
+                // Build button HTML
+                let buttonHtml = '';
+                if (!model.downloaded) {
+                    buttonHtml = `<button class="download-btn" onclick="selectAndDownloadModel('${model.id}')">Download & Load</button>`;
+                } else if (!model.current) {
+                    buttonHtml = `<button class="download-btn" onclick="selectModel('${model.id}')">Load Model</button>`;
+                }
+
                 card.innerHTML = `
                     <h3>${model.name}</h3>
                     <div class="description">${model.description}</div>
@@ -1171,8 +1235,7 @@ HTML_TEMPLATE = """
                     <div style="font-size: 11px; color: #888; margin-top: 5px;">
                         ${model.recommended_for}
                     </div>
-                    ${!model.downloaded ? '<button class="download-btn" onclick="selectAndDownloadModel(\'' + model.id + '\')">Download & Load</button>' : ''}
-                    ${model.downloaded && !model.current ? '<button class="download-btn" onclick="selectModel(\'' + model.id + '\')">Load Model</button>' : ''}
+                    ${buttonHtml}
                 `;
                 grid.appendChild(card);
             });
@@ -1202,16 +1265,23 @@ HTML_TEMPLATE = """
 
         // Model loading
         async function loadModel() {
-            const response = await fetch('/api/load_model', {method: 'POST'});
-            const data = await response.json();
+            try {
+                const response = await fetch('/api/load_model', {method: 'POST'});
+                const data = await response.json();
 
-            if (response.ok) {
-                document.getElementById('model-status-text').textContent = 'Model: Loading...';
-                document.getElementById('model-status-icon').className = 'fas fa-spinner fa-spin status-icon status-loading';
-                document.getElementById('progress-bar').style.display = 'block';
+                if (response.ok) {
+                    document.getElementById('model-status-text').textContent = 'Model: Loading...';
+                    document.getElementById('model-status-icon').className = 'fas fa-spinner fa-spin status-icon status-loading';
+                    document.getElementById('progress-bar').style.display = 'block';
 
-                // Poll for status
-                pollModelStatus();
+                    // Poll for status
+                    pollModelStatus();
+                } else {
+                    alert('Error: ' + (data.message || data.error || 'Failed to start model loading'));
+                }
+            } catch (error) {
+                console.error('Model loading error:', error);
+                alert('Failed to load model. Check console for details.');
             }
         }
 
@@ -1245,88 +1315,149 @@ HTML_TEMPLATE = """
         async function handleFileSelect(file) {
             if (!file) return;
 
+            // Check if model is ready
+            const statusResponse = await fetch('/api/model_status');
+            const statusData = await statusResponse.json();
+
+            if (statusData.status !== 'ready') {
+                alert('Please load a model first by clicking "Select Model" and then "Load Model"');
+                return;
+            }
+
             const formData = new FormData();
             formData.append('file', file);
             formData.append('resolution', 504);
             formData.append('max_points', 1000000);
 
-            const response = await fetch('/api/process', {
-                method: 'POST',
-                body: formData
-            });
+            document.getElementById('model-status-text').textContent = 'Uploading...';
 
-            const data = await response.json();
+            try {
+                const response = await fetch('/api/process', {
+                    method: 'POST',
+                    body: formData
+                });
 
-            if (response.ok) {
-                currentJobId = data.job_id;
-                document.getElementById('model-status-text').textContent = 'Processing...';
-                pollJobStatus();
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentJobId = data.job_id;
+                    document.getElementById('model-status-text').textContent = 'Processing...';
+                    pollJobStatus();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                    document.getElementById('model-status-text').textContent = 'Model: Ready';
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                alert('Failed to upload file. Check console for details.');
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
             }
         }
 
         async function pollJobStatus() {
             const interval = setInterval(async () => {
-                const response = await fetch(`/api/job/${currentJobId}`);
-                const data = await response.json();
+                try {
+                    const response = await fetch(`/api/job/${currentJobId}`);
+                    const data = await response.json();
 
-                if (data.status === 'completed') {
-                    clearInterval(interval);
-                    loadPointCloud(data.pointcloud);
-                    document.getElementById('model-status-text').textContent = 'Model: Ready';
-                    document.getElementById('export-btn').disabled = false;
-                    document.getElementById('floor-btn').disabled = false;
-                    document.getElementById('reset-btn').disabled = false;
+                    if (data.status === 'completed') {
+                        clearInterval(interval);
+                        loadPointCloud(data.pointcloud);
+                        document.getElementById('model-status-text').textContent = 'Model: Ready';
+                        document.getElementById('export-btn').disabled = false;
+                        document.getElementById('floor-btn').disabled = false;
+                        document.getElementById('reset-btn').disabled = false;
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        alert('Processing failed: ' + (data.error || 'Unknown error'));
+                        document.getElementById('model-status-text').textContent = 'Model: Ready';
+                    }
+                } catch (error) {
+                    console.error('Status polling error:', error);
                 }
             }, 1000);
         }
 
         function loadPointCloud(data) {
-            // Remove existing point cloud
-            if (pointCloud) {
-                scene.remove(pointCloud);
+            try {
+                console.log('Loading point cloud with', data.metadata.num_points, 'points');
+
+                // Remove existing point cloud
+                if (pointCloud) {
+                    scene.remove(pointCloud);
+                }
+
+                // Create geometry
+                const geometry = new THREE.BufferGeometry();
+
+                const vertices = new Float32Array(data.vertices.flat());
+                const colors = new Float32Array(data.colors.flat().map(c => c / 255));
+
+                console.log('Vertices:', vertices.length / 3, 'Colors:', colors.length / 3);
+
+                geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+                // Create material
+                const material = new THREE.PointsMaterial({
+                    size: 0.01,
+                    vertexColors: true
+                });
+
+                // Create point cloud
+                pointCloud = new THREE.Points(geometry, material);
+                scene.add(pointCloud);
+
+                // Update stats
+                document.getElementById('points-count').textContent = `Points: ${data.metadata.num_points.toLocaleString()}`;
+
+                // Center camera
+                const box = new THREE.Box3().setFromObject(pointCloud);
+                const center = box.getCenter(new THREE.Vector3());
+                controls.target.copy(center);
+
+                console.log('Point cloud loaded successfully');
+            } catch (error) {
+                console.error('Error loading point cloud:', error);
+                alert('Failed to load point cloud. Check console for details.');
             }
-
-            // Create geometry
-            const geometry = new THREE.BufferGeometry();
-
-            const vertices = new Float32Array(data.vertices.flat());
-            const colors = new Float32Array(data.colors.flat().map(c => c / 255));
-
-            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-            // Create material
-            const material = new THREE.PointsMaterial({
-                size: 0.01,
-                vertexColors: true
-            });
-
-            // Create point cloud
-            pointCloud = new THREE.Points(geometry, material);
-            scene.add(pointCloud);
-
-            // Update stats
-            document.getElementById('points-count').textContent = `Points: ${data.metadata.num_points.toLocaleString()}`;
-
-            // Center camera
-            const box = new THREE.Box3().setFromObject(pointCloud);
-            const center = box.getCenter(new THREE.Vector3());
-            controls.target.copy(center);
         }
 
         // Floor alignment
         async function alignFloor() {
-            const response = await fetch('/api/floor_align', {method: 'POST'});
-            const data = await response.json();
+            try {
+                document.getElementById('model-status-text').textContent = 'Aligning floor...';
+                const response = await fetch('/api/floor_align', {method: 'POST'});
+                const data = await response.json();
 
-            if (response.ok) {
-                loadPointCloud(data.pointcloud);
+                if (response.ok) {
+                    loadPointCloud(data.pointcloud);
+                    alert('Floor aligned successfully! The floor is now at y=0.');
+                    document.getElementById('model-status-text').textContent = 'Model: Ready';
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to align floor'));
+                    document.getElementById('model-status-text').textContent = 'Model: Ready';
+                }
+            } catch (error) {
+                console.error('Floor alignment error:', error);
+                alert('Failed to align floor. Check console for details.');
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
             }
         }
 
         // Export GLB
         async function exportGLB() {
-            window.open('/api/export/glb', '_blank');
+            try {
+                document.getElementById('model-status-text').textContent = 'Exporting...';
+                window.open('/api/export/glb', '_blank');
+                setTimeout(() => {
+                    document.getElementById('model-status-text').textContent = 'Model: Ready';
+                }, 2000);
+            } catch (error) {
+                console.error('Export error:', error);
+                alert('Failed to export. Check console for details.');
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+            }
         }
 
         // Reset view
@@ -1334,6 +1465,14 @@ HTML_TEMPLATE = """
             camera.position.set(0, 2, 5);
             controls.target.set(0, 0, 0);
         }
+
+        // Close modal when clicking outside
+        window.addEventListener('click', (e) => {
+            const modal = document.getElementById('model-modal');
+            if (e.target === modal) {
+                closeModelSelector();
+            }
+        });
 
         // Initialize on load
         window.addEventListener('DOMContentLoaded', () => {
