@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Depth Anything 3 - Three.js API Client</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 100;
+        }
+        #viewer {
+            width: 100vw;
+            height: 100vh;
+        }
+        button {
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px 0;
+        }
+        button:hover {
+            opacity: 0.8;
+        }
+        #status {
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h3>Depth Anything 3 API Client</h3>
+
+        <input type="file" id="imageInput" accept="image/*">
+        <br>
+        <button onclick="processImage()">Process Image</button>
+        <button onclick="downloadGLB()">Download GLB</button>
+        <button onclick="clearScene()">Clear Scene</button>
+
+        <div id="status">
+            <strong>Status:</strong> <span id="statusText">Ready</span>
+        </div>
+    </div>
+
+    <div id="viewer"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+    <script>
+        const API_BASE = "http://localhost:5000";
+
+        // Three.js setup
+        let scene, camera, renderer, controls;
+        let currentPointCloud = null;
+
+        function initThreeJS() {
+            const container = document.getElementById('viewer');
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(
+                75,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                1000
+            );
+            camera.position.set(0, 2, 5);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 10, 10);
+            scene.add(directionalLight);
+
+            // Grid
+            const gridHelper = new THREE.GridHelper(10, 10);
+            scene.add(gridHelper);
+
+            // Axes
+            const axesHelper = new THREE.AxesHelper(5);
+            scene.add(axesHelper);
+
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+
+            // Handle resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // Convert image to base64
+        function imageToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Process image via API
+        async function processImage() {
+            const fileInput = document.getElementById('imageInput');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('Please select an image first');
+                return;
+            }
+
+            updateStatus('Processing image...');
+
+            try {
+                // Convert to base64
+                const imageBase64 = await imageToBase64(file);
+
+                // Send to API
+                const response = await fetch(`${API_BASE}/api/v1/process/image`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        image: imageBase64,
+                        resolution: 504,
+                        max_points: 1000000,
+                        export_format: 'json',
+                        include_cameras: true
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                // Create point cloud from result
+                createPointCloudFromJSON(result.point_cloud);
+
+                updateStatus(`Success! ${result.point_cloud.metadata.num_points} points loaded`);
+
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`);
+                console.error(error);
+            }
+        }
+
+        // Create point cloud from JSON data
+        function createPointCloudFromJSON(pointCloudData) {
+            // Clear previous point cloud
+            if (currentPointCloud) {
+                scene.remove(currentPointCloud);
+            }
+
+            // Create geometry
+            const geometry = new THREE.BufferGeometry();
+
+            // Flatten vertices array
+            const positions = new Float32Array(
+                pointCloudData.vertices.flat()
+            );
+
+            // Normalize colors to 0-1
+            const colors = new Float32Array(
+                pointCloudData.colors.flat().map(c => c / 255)
+            );
+
+            geometry.setAttribute('position',
+                new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color',
+                new THREE.BufferAttribute(colors, 3));
+
+            // Create material
+            const material = new THREE.PointsMaterial({
+                size: 0.01,
+                vertexColors: true,
+                sizeAttenuation: true
+            });
+
+            // Create point cloud
+            currentPointCloud = new THREE.Points(geometry, material);
+
+            // Center and scale
+            geometry.computeBoundingBox();
+            const box = geometry.boundingBox;
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+
+            currentPointCloud.position.x = -center.x;
+            currentPointCloud.position.y = -center.y;
+            currentPointCloud.position.z = -center.z;
+
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 5 / maxDim;
+            currentPointCloud.scale.set(scale, scale, scale);
+
+            scene.add(currentPointCloud);
+
+            // Reset camera
+            camera.position.set(0, 2, 8);
+            controls.target.set(0, 0, 0);
+            controls.update();
+        }
+
+        // Download GLB
+        async function downloadGLB() {
+            const fileInput = document.getElementById('imageInput');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('Please select an image first');
+                return;
+            }
+
+            updateStatus('Generating GLB...');
+
+            try {
+                const imageBase64 = await imageToBase64(file);
+
+                const response = await fetch(`${API_BASE}/api/v1/process/image`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        image: imageBase64,
+                        resolution: 756,
+                        max_points: 1000000,
+                        export_format: 'glb'
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                // Download the GLB file
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'point_cloud.glb';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                updateStatus('GLB downloaded successfully!');
+
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`);
+                console.error(error);
+            }
+        }
+
+        // Clear scene
+        function clearScene() {
+            if (currentPointCloud) {
+                scene.remove(currentPointCloud);
+                currentPointCloud = null;
+                updateStatus('Scene cleared');
+            }
+        }
+
+        // Update status text
+        function updateStatus(text) {
+            document.getElementById('statusText').textContent = text;
+        }
+
+        // Initialize on load
+        window.addEventListener('load', () => {
+            initThreeJS();
+            updateStatus('Ready - Select an image and click Process');
+        });
+    </script>
+</body>
+</html>
