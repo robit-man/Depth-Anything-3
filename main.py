@@ -710,7 +710,7 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Depth Anything 3 - Point Cloud Studio</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/FlyControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -1237,10 +1237,12 @@ HTML_TEMPLATE = """
             renderer.setPixelRatio(window.devicePixelRatio);
             container.appendChild(renderer.domElement);
 
-            // OrbitControls (default)
-            controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
+            // FlyControls (default free-fly camera)
+            controls = new THREE.FlyControls(camera, renderer.domElement);
+            controls.movementSpeed = 5;           // meters per second (scaled scene units)
+            controls.rollSpeed = Math.PI / 8;     // softer roll feel
+            controls.dragToLook = true;           // click-drag to pivot about camera position
+            controls.autoForward = false;
 
             // Lights
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -1284,8 +1286,10 @@ HTML_TEMPLATE = """
                 if (moveUp) rig.position.y += verticalStep;
                 if (moveDown) rig.position.y -= verticalStep;
             } else {
-                // Normal orbit controls
-                controls.update();
+                // Fly controls update
+                if (controls && controls.enabled) {
+                    controls.update(delta);
+                }
             }
 
             renderer.render(scene, camera);
@@ -1464,7 +1468,7 @@ HTML_TEMPLATE = """
             pointerLocked = true;
             document.getElementById('pointer-lock-active').style.display = 'block';
 
-            controls.enabled = false;
+            if (controls) controls.enabled = false;
             document.getElementById('model-status-text').textContent = 'First-Person Mode (ESC to exit)';
             console.log('Pointer lock activated - WASD/Arrows to move, mouse to look, ESC to exit');
         }
@@ -1494,13 +1498,7 @@ HTML_TEMPLATE = """
             pointerLockControls.dispose();
             pointerLockControls = null;
 
-            controls.enabled = true;
-
-            // Re-aim orbit target in front of camera so there is no explicit scene target
-            const forward = new THREE.Vector3();
-            camera.getWorldDirection(forward);
-            controls.target.copy(camera.position.clone().add(forward));
-            controls.update();
+            if (controls) controls.enabled = true;
         }
 
         function handlePointerLockExit() {
@@ -1815,7 +1813,8 @@ HTML_TEMPLATE = """
                 // Center camera
                 const box = new THREE.Box3().setFromObject(pointCloud);
                 const center = box.getCenter(new THREE.Vector3());
-                controls.target.copy(center);
+                camera.lookAt(center);
+                if (controls) controls.update(0);
 
                 console.log('Point cloud loaded successfully');
             } catch (error) {
@@ -2118,7 +2117,8 @@ HTML_TEMPLATE = """
         // Reset view
         function resetView() {
             camera.position.set(0, CAMERA_HEIGHT, 5);  // Reset to eye level
-            controls.target.set(0, CAMERA_HEIGHT, 0);  // Look at eye level
+            camera.lookAt(new THREE.Vector3(0, CAMERA_HEIGHT, 0));
+            if (controls) controls.update(0);
         }
 
         // Toggle FPS mode with dolly camera
