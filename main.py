@@ -263,6 +263,7 @@ class AppState:
         self.model_loading = False
         self.model_ready = False
         self.current_model_id = "da3nested-giant-large"
+        self.model_name = AVAILABLE_MODELS.get(self.current_model_id, {}).get("name", self.current_model_id)
         self.downloaded_models = set()
         self.processing_jobs = {}
         self.current_pointcloud = None
@@ -430,28 +431,38 @@ def list_models():
         })
     return jsonify({"models": models_list})
 
-@app.route('/api/models/select', methods=['POST'])
-def select_model():
-    """Select and load a different model."""
-    data = request.get_json()
-    model_id = data.get('model_id')
-
+def _select_model_by_id(model_id):
     if model_id not in AVAILABLE_MODELS:
-        return jsonify({"error": "Invalid model ID"}), 400
+        return False, jsonify({"error": "Invalid model ID"}), 400
 
-    # Unload current model
     with state.lock:
         state.model = None
         state.model_ready = False
         state.current_model_id = model_id
+        state.model_name = AVAILABLE_MODELS[model_id]["name"]
+    return True, None, None
 
-    return jsonify({"message": f"Model switched to {model_id}. Call /api/load_model to load it."})
+@app.route('/api/models/select', methods=['POST'])
+def select_model():
+    """Select and load a different model."""
+    data = request.get_json()
+    model_id = (data or {}).get('model_id')
+
+    ok, resp, code = _select_model_by_id(model_id)
+    if not ok:
+        return resp, code
+
+    return jsonify({"message": f"Model switched to {model_id}. Call /api/load_model to load it.", "model_id": model_id})
 
 @app.route('/api/load_model', methods=['POST'])
 def load_model():
     """Load the currently selected model."""
     if state.model_loading:
         return jsonify({"message": "Model already loading"}), 400
+
+        # No model selected
+    if state.current_model_id not in AVAILABLE_MODELS:
+        return jsonify({"error": "No valid model selected"}), 400
 
     def load_model_async():
         with state.lock:
@@ -697,6 +708,72 @@ def export_glb():
         json.dump(state.current_pointcloud, f)
 
     return send_file(output_file, mimetype='application/json')
+
+# ============================================================================
+# Ollama-style convenience endpoints (aliases for the above core routes)
+# ============================================================================
+
+@app.route('/api/v1/health', methods=['GET'])
+def health():
+    """Simple service heartbeat with model status."""
+    return jsonify({
+        "status": "ok",
+        "model": {
+            "id": state.current_model_id,
+            "ready": state.model_ready,
+            "loading": state.model_loading,
+            "downloaded": state.current_model_id in state.downloaded_models
+        },
+        "active_jobs": len(state.processing_jobs)
+    })
+
+@app.route('/api/v1/models', methods=['GET'])
+def v1_list_models():
+    """Alias for list_models with simplified field names."""
+    models = list_models().get_json()["models"]
+    return jsonify({"data": models})
+
+@app.route('/api/v1/models/download', methods=['POST'])
+def v1_download_model():
+    """
+    Select and begin downloading/loading a model.
+    Equivalent to calling /api/models/select then /api/load_model.
+    """
+    data = request.get_json()
+    model_id = (data or {}).get("model_id")
+    if not model_id:
+        return jsonify({"error": "model_id is required"}), 400
+    ok, resp, code = _select_model_by_id(model_id)
+    if not ok:
+        return resp, code
+    return load_model()
+
+@app.route('/api/v1/models/load', methods=['POST'])
+def v1_load_model():
+    """Explicitly load a model by id."""
+    data = request.get_json()
+    model_id = (data or {}).get("model_id")
+    if not model_id:
+        return jsonify({"error": "model_id is required"}), 400
+    ok, resp, code = _select_model_by_id(model_id)
+    if not ok:
+        return resp, code
+    return load_model()
+
+@app.route('/api/v1/infer', methods=['POST'])
+def v1_infer():
+    """Alias for /api/process that accepts multipart form-data."""
+    return process_file()
+
+@app.route('/api/v1/jobs/<job_id>', methods=['GET'])
+def v1_job_status(job_id):
+    """Alias for job polling."""
+    return get_job_status(job_id)
+
+@app.route('/api/v1/export/glb', methods=['GET'])
+def v1_export_glb():
+    """Alias for GLB export."""
+    return export_glb()
 
 # ============================================================================
 # HTML TEMPLATE - Full Screen Three.js Interface
@@ -1426,13 +1503,13 @@ HTML_TEMPLATE = """
 
             // Initialize rig orientation to match current view
             camera.position.set(0, 0, 0);
-            camera.rotation.set(0, 0, 0);
+            camera.rotation.set(0, 0, 0); // clear any roll from fly mode
 
             cameraYaw = Math.atan2(worldDir.x, worldDir.z);
             cameraPitch = Math.asin(-worldDir.y);
 
             rig.position.copy(worldPos);
-            rig.position.y = CAMERA_HEIGHT;
+            rig.position.y = CAMERA_HEIGHT; // force eye height for FPS entry
             rig.rotation.y = cameraYaw;
 
             const pitchObject = rig.children[0];
@@ -1456,12 +1533,16 @@ HTML_TEMPLATE = """
             cameraPitch = Math.asin(-worldDir.y);
 
             rig.position.copy(worldPos);
-            rig.position.y = CAMERA_HEIGHT;
+            rig.position.y = CAMERA_HEIGHT; // reset to FPS eye height to avoid drift
             rig.rotation.y = cameraYaw;
 
             if (pitchObject) {
                 pitchObject.rotation.x = cameraPitch;
+                pitchObject.rotation.z = 0; // remove roll from fly controls
             }
+
+            // Clear any residual roll on the camera itself
+            camera.rotation.set(0, 0, 0);
         }
 
         function handlePointerLockEnter() {
@@ -1530,6 +1611,8 @@ HTML_TEMPLATE = """
             syncPointerLockRig();
 
             if (pointerLockControls) {
+                // Reset local camera rotation to align with yaw/pitch-only FPS rig
+                camera.rotation.set(0, 0, 0);
                 pointerLockControls.lock();
             }
         }
