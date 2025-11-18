@@ -81,8 +81,8 @@ def prediction_to_point_cloud_json(prediction, max_points: int = None, include_c
             fx, fy = intrinsics[0, 0], intrinsics[1, 1]
             cx, cy = intrinsics[0, 2], intrinsics[1, 2]
 
-            x3d = (x_coords - cx) * depth / fx
-            y3d = (y_coords - cy) * depth / fy
+            x3d = -(x_coords - cx) * depth / fx  # Negate X to match camera convention
+            y3d = -(y_coords - cy) * depth / fy  # Negate Y to convert from image coords (Y down) to 3D coords (Y up)
             z3d = depth
 
             # Stack to get points in camera coordinates

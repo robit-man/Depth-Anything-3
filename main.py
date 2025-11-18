@@ -598,8 +598,8 @@ def process_file():
                     y_coords, x_coords = np.mgrid[0:h, 0:w]
 
                     # Unproject to 3D
-                    x3d = (x_coords - cx) * depth / fx
-                    y3d = (y_coords - cy) * depth / fy
+                    x3d = -(x_coords - cx) * depth / fx  # Negate X to match camera convention
+                    y3d = -(y_coords - cy) * depth / fy  # Negate Y to convert from image coords (Y down) to 3D coords (Y up)
                     z3d = depth
 
                     points = np.stack([x3d, y3d, z3d], axis=-1).reshape(-1, 3)
@@ -1154,6 +1154,7 @@ HTML_TEMPLATE = """
         let highlightedPoints = null;
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
+        let originalPointCloudData = null;  // Store original point cloud data for color restoration
 
         function initThreeJS() {
             const container = document.getElementById('canvas-container');
@@ -1509,6 +1510,13 @@ HTML_TEMPLATE = """
             try {
                 console.log('Loading point cloud with', data.metadata.num_points, 'points');
 
+                // Store original data for color restoration
+                originalPointCloudData = {
+                    vertices: data.vertices,
+                    colors: data.colors,
+                    metadata: data.metadata
+                };
+
                 // Remove existing point cloud
                 if (pointCloud) {
                     scene.remove(pointCloud);
@@ -1683,10 +1691,10 @@ HTML_TEMPLATE = """
         }
 
         function clearHighlightedPoints() {
-            if (!pointCloud || !state.current_pointcloud) return;
+            if (!pointCloud || !originalPointCloudData) return;
 
             const colors = pointCloud.geometry.attributes.color.array;
-            const originalColors = state.current_pointcloud.colors;
+            const originalColors = originalPointCloudData.colors;
 
             // Restore original colors
             for (let i = 0; i < originalColors.length; i++) {
@@ -1696,6 +1704,7 @@ HTML_TEMPLATE = """
             }
 
             pointCloud.geometry.attributes.color.needsUpdate = true;
+            console.log('Original colors restored');
         }
 
         function fitPlaneToPoints(points) {
@@ -1806,14 +1815,17 @@ HTML_TEMPLATE = """
             pointCloud.geometry.attributes.position.needsUpdate = true;
             pointCloud.geometry.computeBoundingSphere();
 
-            // Update stored point cloud
+            // Update stored point cloud data with new aligned vertices
             const newVertices = [];
             for (let i = 0; i < positions.length; i += 3) {
                 newVertices.push([positions[i], positions[i + 1], positions[i + 2]]);
             }
-            state.current_pointcloud.vertices = newVertices;
 
-            // Exit selection mode
+            if (originalPointCloudData) {
+                originalPointCloudData.vertices = newVertices;
+            }
+
+            // Exit selection mode (this will restore original colors)
             toggleManualFloorSelection();
 
             alert(`Floor aligned! Used ${selectedPoints.length} points for plane fitting.`);
