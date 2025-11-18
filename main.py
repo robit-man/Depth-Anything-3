@@ -104,6 +104,15 @@ def bootstrap_environment():
             print("\n📦 Installing depth-anything-3 package (without dependencies)...")
             subprocess.run([str(venv_pip), "install", "-e", ".", "--no-deps"], check=True)
 
+            # Ensure moviepy is installed (needed for video processing)
+            print("\n📦 Ensuring moviepy is installed...")
+            try:
+                subprocess.run([str(venv_pip), "install", "moviepy==1.0.3"], check=True)
+                print("✓ moviepy installed")
+            except subprocess.CalledProcessError:
+                print("⚠️  Warning: moviepy installation had issues, trying without version pin...")
+                subprocess.run([str(venv_pip), "install", "moviepy"], check=True)
+
             # Install Flask (not in requirements.txt)
             print("\n📦 Installing Flask...")
             subprocess.run([str(venv_pip), "install", "flask", "flask-cors"], check=True)
