@@ -42,7 +42,7 @@ Base URL defaults to `http://localhost:<port>` where `<port>` is printed when th
 ## Inference / jobs
 - `POST /api/process` (alias: `POST /api/v1/infer`)
   - Multipart form-data fields:
-    - `file` (required): image or video file.
+    - `file` (required): image, video, or `.glb` file. If `.glb`, the point cloud is loaded directly instead of running inference.
     - `resolution` (optional, int; default 504)
     - `max_points` (optional, int; default 1_000_000)
   - Starts async processing. Response: `{ "job_id": "job_<timestamp>", "message": "Processing started" }`

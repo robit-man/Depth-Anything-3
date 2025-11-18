@@ -150,6 +150,7 @@ import base64
 import io
 from PIL import Image
 import socket
+import trimesh
 
 # Import DA3 modules
 try:
@@ -509,10 +510,7 @@ def model_status():
 
 @app.route('/api/process', methods=['POST'])
 def process_file():
-    """Process uploaded image/video."""
-    if not state.model_ready:
-        return jsonify({"error": "Model not loaded"}), 503
-
+    """Process uploaded image/video/GLB."""
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -520,10 +518,54 @@ def process_file():
     if file.filename == '':
         return jsonify({"error": "Empty filename"}), 400
 
-    # Save file
     filename = secure_filename(file.filename)
     filepath = Path(app.config['UPLOAD_FOLDER']) / filename
     file.save(filepath)
+
+    # If GLB, bypass inference and just load the point cloud
+    if filepath.suffix.lower() == ".glb":
+        try:
+            mesh = trimesh.load(str(filepath))
+            vertices = []
+            colors = []
+
+            if isinstance(mesh, trimesh.Scene):
+                for geom in mesh.geometry.values():
+                    if isinstance(geom, trimesh.points.PointCloud):
+                        vertices.append(geom.vertices)
+                        if geom.colors is not None:
+                            colors.append(geom.colors[:, :3])
+            elif isinstance(mesh, trimesh.points.PointCloud):
+                vertices.append(mesh.vertices)
+                if mesh.colors is not None:
+                    colors.append(mesh.colors[:, :3])
+
+            if not vertices:
+                return jsonify({"error": "No point data found in GLB"}), 400
+
+            vertices = np.vstack(vertices)
+            if colors:
+                colors = np.vstack(colors)
+            else:
+                colors = np.ones_like(vertices) * 255
+
+            state.current_pointcloud = {
+                "vertices": vertices.tolist(),
+                "colors": colors.tolist(),
+                "metadata": {
+                    "num_points": len(vertices),
+                    "filename": filename,
+                    "source": "glb_upload"
+                }
+            }
+            return jsonify({"status": "completed", "pointcloud": state.current_pointcloud})
+        except Exception as e:
+            print(f"❌ GLB ingest failed: {e}")
+            return jsonify({"error": f"Failed to load GLB: {e}"}), 500
+
+    # Otherwise, require model readiness for inference
+    if not state.model_ready:
+        return jsonify({"error": "Model not loaded"}), 503
 
     # Get processing parameters
     resolution = int(request.form.get('resolution', 504))
@@ -699,15 +741,33 @@ def export_glb():
     """Export current point cloud as GLB."""
     if state.current_pointcloud is None:
         return jsonify({"error": "No point cloud to export"}), 400
+    try:
+        vertices = np.array(state.current_pointcloud["vertices"], dtype=np.float32)
+        colors = np.array(state.current_pointcloud["colors"], dtype=np.float32)
 
-    # Create GLB file
-    # (Implementation would use pygltflib or similar)
-    # For now, return JSON
-    output_file = Path(app.config['OUTPUT_FOLDER']) / "export.json"
-    with open(output_file, 'w') as f:
-        json.dump(state.current_pointcloud, f)
+        # Normalize colors to 0-255 uint8 if needed
+        if colors.max() <= 1.0:
+            colors = (colors * 255.0).clip(0, 255)
+        colors = colors.astype(np.uint8)
 
-    return send_file(output_file, mimetype='application/json')
+        # Build glb name from source filename
+        src_name = state.current_pointcloud.get("metadata", {}).get("filename", "point_cloud")
+        glb_name = f"{Path(src_name).stem}.glb"
+
+        output_dir = Path(app.config['OUTPUT_FOLDER'])
+        output_dir.mkdir(exist_ok=True)
+        output_file = output_dir / glb_name
+
+        # Create point cloud scene and export to GLB
+        scene = trimesh.Scene()
+        if len(vertices) > 0:
+            scene.add_geometry(trimesh.points.PointCloud(vertices=vertices, colors=colors))
+        scene.export(output_file, file_type='glb')
+
+        return send_file(output_file, mimetype='model/gltf-binary', as_attachment=True, download_name=glb_name)
+    except Exception as e:
+        print(f"❌ GLB export failed: {e}")
+        return jsonify({"error": f"Failed to export GLB: {e}"}), 500
 
 # ============================================================================
 # Ollama-style convenience endpoints (aliases for the above core routes)
@@ -1284,6 +1344,7 @@ HTML_TEMPLATE = """
         const WALK_SPEED = 3.5;
         const VERTICAL_SPEED = 2.0;
         const clock = new THREE.Clock();
+        const tempEuler = new THREE.Euler(0, 0, 0, 'YXZ');  // used to zero roll in fly mode
         let moveForward = false;
         let moveBackward = false;
         let moveLeft = false;
@@ -1366,6 +1427,11 @@ HTML_TEMPLATE = """
                 // Fly controls update
                 if (controls && controls.enabled) {
                     controls.update(delta);
+                    // Keep fly mode upright (remove roll)
+                    tempEuler.setFromQuaternion(camera.quaternion, 'YXZ');
+                    tempEuler.z = 0;
+                    camera.quaternion.setFromEuler(tempEuler);
+                    camera.up.set(0, 1, 0);
                 }
             }
 
@@ -1624,7 +1690,7 @@ HTML_TEMPLATE = """
 
             // Start hold on mousedown (not in floor selection mode)
             renderer.domElement.addEventListener('mousedown', (e) => {
-                if (e.button === 0 && !manualFloorMode && !pointerLocked) {
+                if (e.button === 0 && !manualFloorMode && !pointerLocked && fpsModeActive) {
                     holdStartTime = Date.now();
 
                     // Position indicator at cursor
