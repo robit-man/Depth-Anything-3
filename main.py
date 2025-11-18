@@ -157,6 +157,7 @@ import shutil
 import base64
 import io
 from PIL import Image
+import socket
 
 # Import DA3 modules (after bootstrap)
 try:
@@ -170,6 +171,18 @@ except ImportError as e:
 # ============================================================================
 # FLASK APPLICATION SETUP
 # ============================================================================
+
+def find_available_port(start_port=5000, max_attempts=10):
+    """Find an available port starting from start_port."""
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(('0.0.0.0', port))
+            sock.close()
+            return port
+        except OSError:
+            continue
+    raise RuntimeError(f"Could not find available port in range {start_port}-{start_port + max_attempts}")
 
 app = Flask(__name__)
 CORS(app)
@@ -1140,6 +1153,13 @@ def serve_output(job_id, filename):
 # ============================================================================
 
 if __name__ == '__main__':
+    # Find available port
+    try:
+        port = find_available_port(start_port=5000, max_attempts=10)
+    except RuntimeError as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+
     print("\n" + "=" * 70)
     print("🚀 Depth Anything 3 - Flask Application")
     print("=" * 70)
@@ -1148,7 +1168,9 @@ if __name__ == '__main__':
     print(f"✓ CUDA Available: {torch.cuda.is_available()}")
     print("=" * 70)
     print("\n📡 Starting Flask server...")
-    print("🌐 Open your browser and navigate to: http://localhost:5000")
+    print(f"🌐 Open your browser and navigate to: http://localhost:{port}")
+    if port != 5000:
+        print(f"   ℹ️  Note: Using port {port} (port 5000 was in use)")
     print("\n💡 Tips:")
     print("   - Click 'Load Model' to download and load the DA3 model (first time only)")
     print("   - Upload a video or images using the upload area")
@@ -1157,4 +1179,4 @@ if __name__ == '__main__':
     print("\n⚠️  Press Ctrl+C to stop the server")
     print("=" * 70 + "\n")
 
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
