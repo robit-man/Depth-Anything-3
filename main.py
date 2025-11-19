@@ -862,6 +862,7 @@ HTML_TEMPLATE = """
     <title>Depth Anything 3 - Point Cloud Studio</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/FlyControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -1252,8 +1253,8 @@ HTML_TEMPLATE = """
         <button onclick="toggleManualFloorSelection()" id="manual-floor-btn" disabled>
             <i class="fas fa-mouse-pointer"></i> <span id="manual-floor-text">Select Floor</span>
         </button>
-        <button onclick="toggleFPSMode()" id="fps-mode-btn" disabled>
-            <i class="fas fa-running"></i> <span id="fps-mode-text">FPS Mode</span>
+        <button onclick="cycleCameraMode()" id="camera-mode-btn" disabled>
+            <i class="fas fa-running"></i> <span id="camera-mode-text">Fly Mode</span>
         </button>
         <button onclick="resetView()" id="reset-btn" disabled>
             <i class="fas fa-undo"></i> Reset View
@@ -1338,6 +1339,8 @@ HTML_TEMPLATE = """
     <script>
         // Three.js setup
         let scene, camera, renderer, controls, pointerLockControls, pointCloud;
+        let flyControls = null;
+        let orbitControls = null;
         let currentJobId = null;
         let currentModel = null;
         let manualFloorMode = false;
@@ -1347,8 +1350,20 @@ HTML_TEMPLATE = """
         let mouse = new THREE.Vector2();
         let originalPointCloudData = null;  // Store original point cloud data for color restoration
 
-        // FPS mode with PointerLockControls
-        let fpsModeActive = false;
+        // Camera mode tracking
+        const CAMERA_MODES = ['ORBIT', 'FLY', 'FPS'];
+        const CAMERA_MODE_LABELS = {
+            ORBIT: 'Orbit',
+            FLY: 'Fly',
+            FPS: 'FPS'
+        };
+        const CAMERA_MODE_STYLES = {
+            ORBIT: { background: 'rgba(249, 115, 22, 0.25)', border: 'rgba(249, 115, 22, 0.6)' },
+            FLY: { background: 'rgba(59, 130, 246, 0.25)', border: 'rgba(59, 130, 246, 0.6)' },
+            FPS: { background: 'rgba(16, 185, 129, 0.25)', border: 'rgba(16, 185, 129, 0.6)' }
+        };
+        let currentCameraModeIndex = 1; // default to fly controls
+        let activeCameraMode = CAMERA_MODES[currentCameraModeIndex];
         let pointerLocked = false;
         let holdStartTime = null;
         let holdTimeout = null;
@@ -1391,11 +1406,22 @@ HTML_TEMPLATE = """
             container.appendChild(renderer.domElement);
 
             // FlyControls (default free-fly camera)
-            controls = new THREE.FlyControls(camera, renderer.domElement);
-            controls.movementSpeed = 5;           // meters per second (scaled scene units)
-            controls.rollSpeed = Math.PI / 8;     // softer roll feel
-            controls.dragToLook = true;           // click-drag to pivot about camera position
-            controls.autoForward = false;
+            flyControls = new THREE.FlyControls(camera, renderer.domElement);
+            flyControls.movementSpeed = 5;           // meters per second (scaled scene units)
+            flyControls.rollSpeed = Math.PI / 8;     // softer roll feel
+            flyControls.dragToLook = true;           // click-drag to pivot about camera position
+            flyControls.autoForward = false;
+            flyControls.enabled = false;
+
+            // OrbitControls for anchor/turntable navigation
+            orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+            orbitControls.enableDamping = true;
+            orbitControls.dampingFactor = 0.05;
+            orbitControls.enablePan = true;
+            orbitControls.screenSpacePanning = true;
+            orbitControls.minDistance = 0.5;
+            orbitControls.maxDistance = 200;
+            orbitControls.enabled = false;
 
             // Lights
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -1413,6 +1439,9 @@ HTML_TEMPLATE = """
             const axesHelper = new THREE.AxesHelper(5);
             scene.add(axesHelper);
 
+            // Set initial camera mode (fly)
+            setCameraMode(activeCameraMode);
+
             // Window resize
             window.addEventListener('resize', onWindowResize);
 
@@ -1425,7 +1454,7 @@ HTML_TEMPLATE = """
 
             const delta = clock.getDelta();
 
-            if (fpsModeActive && pointerLocked && pointerLockControls) {
+            if (isFPSMode() && pointerLocked && pointerLockControls) {
                 // FPS mode movement (WASD/Arrows with pointer lock)
                 const moveStep = WALK_SPEED * delta;
                 const verticalStep = VERTICAL_SPEED * delta;
@@ -1438,15 +1467,17 @@ HTML_TEMPLATE = """
                 const rig = pointerLockControls.getObject();
                 if (moveUp) rig.position.y += verticalStep;
                 if (moveDown) rig.position.y -= verticalStep;
-            } else {
-                // Fly controls update
-                if (controls && controls.enabled) {
-                    controls.update(delta);
-                    // Keep fly mode upright (remove roll)
+            } else if (activeCameraMode === 'FLY') {
+                if (flyControls && flyControls.enabled) {
+                    flyControls.update(delta);
                     tempEuler.setFromQuaternion(camera.quaternion, 'YXZ');
                     tempEuler.z = 0;
                     camera.quaternion.setFromEuler(tempEuler);
                     camera.up.set(0, 1, 0);
+                }
+            } else if (activeCameraMode === 'ORBIT') {
+                if (orbitControls && orbitControls.enabled) {
+                    orbitControls.update();
                 }
             }
 
@@ -1524,6 +1555,12 @@ HTML_TEMPLATE = """
                             camera.position.y = CAMERA_HEIGHT;
                         }
                         e.preventDefault();
+                        break;
+                    case 'Escape':
+                        if (isFPSMode()) {
+                            e.preventDefault();
+                            cycleCameraMode();
+                        }
                         break;
                 }
             });
@@ -1660,7 +1697,7 @@ HTML_TEMPLATE = """
             pointerLockControls.dispose();
             pointerLockControls = null;
 
-            if (controls) controls.enabled = true;
+            if (controls && !isFPSMode()) controls.enabled = true;
         }
 
         function handlePointerLockExit() {
@@ -1670,9 +1707,8 @@ HTML_TEMPLATE = """
             document.getElementById('pointer-lock-active').style.display = 'none';
             restoreCameraAfterPointerLock();
 
-            if (fpsModeActive) {
-                fpsModeActive = false;
-                updateFPSButtonState();
+            if (isFPSMode()) {
+                cycleCameraMode();
             }
 
             document.getElementById('model-status-text').textContent = 'Model: Ready';
@@ -1682,12 +1718,14 @@ HTML_TEMPLATE = """
         function exitPointerLock() {
             if (document.pointerLockElement) {
                 document.exitPointerLock();
-            } else {
+            } else if (pointerLocked || pointerLockControls) {
                 handlePointerLockExit();
             }
         }
 
         function requestPointerLock() {
+            if (!isFPSMode()) return;
+
             ensurePointerLockControls();
             syncPointerLockRig();
 
@@ -1705,7 +1743,7 @@ HTML_TEMPLATE = """
 
             // Start hold on mousedown (not in floor selection mode)
             renderer.domElement.addEventListener('mousedown', (e) => {
-                if (e.button === 0 && !manualFloorMode && !pointerLocked && fpsModeActive) {
+                if (e.button === 0 && !manualFloorMode && !pointerLocked && isFPSMode()) {
                     holdStartTime = Date.now();
 
                     // Position indicator at cursor
@@ -1729,7 +1767,9 @@ HTML_TEMPLATE = """
                     // Request pointer lock after 3 seconds
                     holdTimeout = setTimeout(() => {
                         indicator.style.display = 'none';
-                        requestPointerLock();
+                        if (isFPSMode()) {
+                            requestPointerLock();
+                        }
                     }, 3000);
                 }
             });
@@ -1908,7 +1948,7 @@ HTML_TEMPLATE = """
                     document.getElementById('export-btn').disabled = false;
                     document.getElementById('floor-btn').disabled = false;
                     document.getElementById('manual-floor-btn').disabled = false;
-                    document.getElementById('fps-mode-btn').disabled = false;
+                    document.getElementById('camera-mode-btn').disabled = false;
                     document.getElementById('reset-btn').disabled = false;
                     return;
                 } else if (response.ok && data.job_id) {
@@ -1975,7 +2015,7 @@ HTML_TEMPLATE = """
                 document.getElementById('export-btn').disabled = false;
                 document.getElementById('floor-btn').disabled = false;
                 document.getElementById('manual-floor-btn').disabled = false;
-                document.getElementById('fps-mode-btn').disabled = false;
+                document.getElementById('camera-mode-btn').disabled = false;
                 document.getElementById('reset-btn').disabled = false;
 
                 URL.revokeObjectURL(url);
@@ -2000,7 +2040,7 @@ HTML_TEMPLATE = """
                         document.getElementById('export-btn').disabled = false;
                         document.getElementById('floor-btn').disabled = false;
                         document.getElementById('manual-floor-btn').disabled = false;
-                        document.getElementById('fps-mode-btn').disabled = false;
+                        document.getElementById('camera-mode-btn').disabled = false;
                         document.getElementById('reset-btn').disabled = false;
                     } else if (data.status === 'error') {
                         clearInterval(interval);
@@ -2364,33 +2404,66 @@ HTML_TEMPLATE = """
             if (controls) controls.update(0);
         }
 
-        // Toggle FPS mode with dolly camera
-        function toggleFPSMode() {
-            fpsModeActive = !fpsModeActive;
-            updateFPSButtonState();
-
-            if (fpsModeActive) {
-                requestPointerLock();
-                console.log('FPS Mode activated');
-            } else {
-                exitPointerLock();
-                console.log('FPS Mode deactivated');
-            }
+        function disableNavigationControls() {
+            if (flyControls) flyControls.enabled = false;
+            if (orbitControls) orbitControls.enabled = false;
+            controls = null;
         }
 
-        function updateFPSButtonState() {
-            const btn = document.getElementById('fps-mode-btn');
-            const text = document.getElementById('fps-mode-text');
+        function isFPSMode() {
+            return activeCameraMode === 'FPS';
+        }
 
-            if (fpsModeActive) {
-                btn.style.background = 'rgba(59, 130, 246, 0.5)';
-                btn.style.borderColor = 'rgba(59, 130, 246, 0.8)';
-                text.textContent = 'Exit FPS';
-            } else {
-                btn.style.background = 'rgba(16, 185, 129, 0.2)';
-                btn.style.borderColor = 'rgba(16, 185, 129, 0.5)';
-                text.textContent = 'FPS Mode';
+        function setCameraMode(mode) {
+            if (!CAMERA_MODES.includes(mode)) return;
+
+            activeCameraMode = mode;
+            currentCameraModeIndex = CAMERA_MODES.indexOf(mode);
+
+            if (mode === 'FPS') {
+                disableNavigationControls();
+                updateCameraModeButtonState();
+                if (!pointerLocked) {
+                    requestPointerLock();
+                }
+                console.log('FPS Mode activated');
+                return;
             }
+
+            if (pointerLocked || pointerLockControls) {
+                exitPointerLock();
+            }
+
+            disableNavigationControls();
+
+            if (mode === 'FLY' && flyControls) {
+                flyControls.enabled = true;
+                controls = flyControls;
+            } else if (mode === 'ORBIT' && orbitControls) {
+                orbitControls.enabled = true;
+                controls = orbitControls;
+            }
+
+            updateCameraModeButtonState();
+            console.log(`${mode} Mode activated`);
+        }
+
+        function cycleCameraMode() {
+            currentCameraModeIndex = (currentCameraModeIndex + 1) % CAMERA_MODES.length;
+            setCameraMode(CAMERA_MODES[currentCameraModeIndex]);
+        }
+
+        function updateCameraModeButtonState() {
+            const btn = document.getElementById('camera-mode-btn');
+            const text = document.getElementById('camera-mode-text');
+            if (!btn || !text) return;
+
+            const mode = activeCameraMode;
+            const style = CAMERA_MODE_STYLES[mode] || {};
+            text.textContent = `${CAMERA_MODE_LABELS[mode] || mode} Mode`;
+
+            if (style.background) btn.style.background = style.background;
+            if (style.border) btn.style.borderColor = style.border;
         }
 
         function setupModalCloseHandler() {
