@@ -2176,7 +2176,7 @@
                 if (viewerConfig.pointShape === 'circle') {
                     shader.fragmentShader = shader.fragmentShader.replace(
                         '#include <alphatest_fragment>',
-                        'if (length(gl_PointCoord - 0.5) > 0.5) discard;\\n#include <alphatest_fragment>'
+                        'if (length(gl_PointCoord - 0.5) > 0.5) discard;\n#include <alphatest_fragment>'
                     );
                 }
             };
