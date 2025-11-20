@@ -40,3 +40,8 @@ FLASK*
 clean_and*
 FIX_APP*
 test_main*
+.venv
+
+# Generated Files
+*.pem
+config.json
