@@ -10,6 +10,7 @@ import subprocess
 import json
 import time
 import threading
+import signal
 from pathlib import Path
 
 # ============================================================================
@@ -494,6 +495,7 @@ def load_model():
                 state.model_ready = False
 
     thread = threading.Thread(target=load_model_async)
+    thread.daemon = True
     thread.start()
 
     return jsonify({"message": "Model loading started", "status": "loading"})
@@ -819,6 +821,7 @@ def process_file():
 
     state.processing_jobs[job_id] = {"status": "processing"}
     thread = threading.Thread(target=process_async)
+    thread.daemon = True
     thread.start()
 
     return jsonify({"job_id": job_id, "message": "Processing started"})
@@ -969,6 +972,7 @@ HTML_TEMPLATE = """
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/math/ConvexHull.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/ConvexGeometry.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -2722,7 +2726,14 @@ HTML_TEMPLATE = """
         }
 
         function buildMeshFromActiveCloud() {
-            if (!viewerConfig.generateMesh || !activePointCloudData || !THREE.ConvexGeometry) return;
+            if (!viewerConfig.generateMesh || !activePointCloudData) return;
+            if (!THREE.ConvexGeometry || !THREE.ConvexHull) {
+                console.warn('Convex mesh unavailable: missing ConvexGeometry/ConvexHull from three.js examples');
+                viewerConfig.generateMesh = false;
+                const chk = document.getElementById('mesh-toggle');
+                if (chk) chk.checked = false;
+                return;
+            }
             removeMesh();
 
             const vertices = activePointCloudData.vertices || [];
@@ -3287,7 +3298,20 @@ HTML_TEMPLATE = """
 # MAIN ENTRY POINT
 # ============================================================================
 
+def setup_signal_handlers():
+    """Handle termination signals so Ctrl+C/Z exit cleanly."""
+    def _graceful_exit(signum, frame):
+        print("\n🛑 Received termination signal, shutting down gracefully...")
+        sys.exit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _graceful_exit)
+        except Exception:
+            pass
+
 if __name__ == '__main__':
+    setup_signal_handlers()
     print("\n" + "="*70)
     print("🚀 Depth Anything 3 - Full-Screen Three.js Interface")
     print("="*70)
