@@ -1596,7 +1596,7 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="config-row">
                         <label for="mesh-sample-input">Mesh Sample Points</label>
-                        <input type="number" id="mesh-sample-input" min="500" max="20000" step="500" value="8000">
+                        <input type="number" id="mesh-sample-input" min="500" max="20000" step="500" value="3000">
                     </div>
                     <div class="config-row">
                         <label for="fill-sparse-toggle">Fill Sparse Distance Gaps</label>
@@ -1673,7 +1673,7 @@ HTML_TEMPLATE = """
             pointSize: 0.01,
             pointShape: 'circle',
             generateMesh: false,
-            meshSamplePoints: 8000,
+            meshSamplePoints: 3000,
             fillSparse: false,
             sparseFillDistance: 5,
             sparseFillNeighbors: 3,
@@ -2489,74 +2489,42 @@ HTML_TEMPLATE = """
                     scene.remove(pointCloud);
                     pointCloud = null;
                 }
+                removeMesh();
 
                 let loadedPoints = null;
+                let numPoints = 0;
+
+                // Simply find the Points object in the scene and use it directly
                 gltf.scene.traverse((child) => {
                     if (child.isPoints) {
-                        const clone = child.clone();
-                        if (clone.material && clone.material.size === undefined) {
-                            clone.material.size = 0.01;
+                        loadedPoints = child;
+                        // Ensure material has proper settings for vertex colors
+                        if (child.material) {
+                            child.material.vertexColors = true;
+                            child.material.size = child.material.size || 0.01;
+                            child.material.needsUpdate = true;
                         }
-                        loadedPoints = loadedPoints || clone;
-                    } else if (child.isMesh) {
-                        const geom = child.geometry;
-                        if (!geom) return;
-                        const hasColor = !!geom.attributes.color;
-                        const mat = new THREE.PointsMaterial({ size: 0.01, vertexColors: hasColor, color: hasColor ? undefined : 0xffffff });
-                        const pts = new THREE.Points(geom, mat);
-                        loadedPoints = loadedPoints || pts;
+                        if (child.geometry && child.geometry.attributes.position) {
+                            numPoints = child.geometry.attributes.position.count;
+                        }
                     }
                 });
 
+                // If no Points object found, try to use the whole scene
                 if (!loadedPoints) {
-                    // Fallback: use the full scene
                     loadedPoints = gltf.scene;
-                }
-
-                if (loadedPoints && loadedPoints.isPoints && loadedPoints.geometry && loadedPoints.geometry.attributes.position) {
-                    const positions = loadedPoints.geometry.attributes.position;
-                    const colorAttr = loadedPoints.geometry.attributes.color;
-                    const vertices = [];
-                    const colors = [];
-
-                    for (let i = 0; i < positions.count; i++) {
-                        vertices.push([
-                            positions.getX(i),
-                            positions.getY(i),
-                            positions.getZ(i)
-                        ]);
-                        if (colorAttr) {
-                            colors.push([
-                                (colorAttr.getX(i) || 0) * (colorAttr.normalized ? 255 : 1),
-                                (colorAttr.getY(i) || 0) * (colorAttr.normalized ? 255 : 1),
-                                (colorAttr.getZ(i) || 0) * (colorAttr.normalized ? 255 : 1)
-                            ]);
-                        }
-                    }
-
-                    const resolvedColors = colors.length ? colors : vertices.map(() => [255, 255, 255]);
-
-                    loadPointCloud({
-                        vertices,
-                        colors: resolvedColors,
-                        metadata: {
-                            num_points: vertices.length,
-                            filename: file.name,
-                            source: 'glb_upload'
+                    gltf.scene.traverse((child) => {
+                        if (child.geometry && child.geometry.attributes.position) {
+                            numPoints += child.geometry.attributes.position.count;
                         }
                     });
-                } else {
-                    removeMesh();
-                    pointCloud = loadedPoints;
-                    scene.add(pointCloud);
-
-                    let numPoints = 0;
-                    if (pointCloud.isPoints && pointCloud.geometry && pointCloud.geometry.attributes.position) {
-                        numPoints = pointCloud.geometry.attributes.position.count;
-                    }
-                    document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
                 }
 
+                // Add the loaded GLB directly to the scene
+                pointCloud = loadedPoints;
+                scene.add(pointCloud);
+
+                document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
                 document.getElementById('model-status-text').textContent = 'Model: Ready';
                 document.getElementById('export-btn').disabled = false;
                 document.getElementById('floor-btn').disabled = false;
@@ -2727,13 +2695,6 @@ HTML_TEMPLATE = """
 
         function buildMeshFromActiveCloud() {
             if (!viewerConfig.generateMesh || !activePointCloudData) return;
-            if (!THREE.ConvexGeometry || !THREE.ConvexHull) {
-                console.warn('Convex mesh unavailable: missing ConvexGeometry/ConvexHull from three.js examples');
-                viewerConfig.generateMesh = false;
-                const chk = document.getElementById('mesh-toggle');
-                if (chk) chk.checked = false;
-                return;
-            }
             removeMesh();
 
             const vertices = activePointCloudData.vertices || [];
@@ -2745,37 +2706,98 @@ HTML_TEMPLATE = """
                     : vertices.map(() => [255, 255, 255])
             );
 
-            const sampleCount = Math.min(viewerConfig.meshSamplePoints, vertices.length);
+            const sampleCap = 5000;
+            const sampleCount = Math.min(
+                Math.max(500, viewerConfig.meshSamplePoints),
+                Math.min(vertices.length, sampleCap)
+            );
             const sampleIndices = new Set();
             while (sampleIndices.size < sampleCount) {
                 sampleIndices.add(Math.floor(Math.random() * vertices.length));
             }
 
             const points = [];
-            const colorLookup = new Map();
+            const colors = [];
             sampleIndices.forEach((idx) => {
                 const v = vertices[idx];
-                const key = `${v[0].toFixed(5)}|${v[1].toFixed(5)}|${v[2].toFixed(5)}`;
-                points.push(new THREE.Vector3(v[0], v[1], v[2]));
                 const c = baseColors[idx] || [255, 255, 255];
-                colorLookup.set(key, [c[0] / 255, c[1] / 255, c[2] / 255]);
+                points.push(new THREE.Vector3(v[0], v[1], v[2]));
+                colors.push([c[0] / 255, c[1] / 255, c[2] / 255]);
             });
 
-            const geometry = new THREE.ConvexGeometry(points);
-            const colorArray = new Float32Array(geometry.attributes.position.count * 3);
-            const posAttr = geometry.attributes.position;
-            for (let i = 0; i < posAttr.count; i++) {
-                const key = `${posAttr.getX(i).toFixed(5)}|${posAttr.getY(i).toFixed(5)}|${posAttr.getZ(i).toFixed(5)}`;
-                const c = colorLookup.get(key) || [1, 1, 1];
-                colorArray[i * 3] = c[0];
-                colorArray[i * 3 + 1] = c[1];
-                colorArray[i * 3 + 2] = c[2];
+            const neighborCount = Math.min(10, points.length - 1);
+            const neighborMap = [];
+            for (let i = 0; i < points.length; i++) {
+                const center = points[i];
+                const distances = [];
+                for (let j = 0; j < points.length; j++) {
+                    if (i === j) continue;
+                    const dist = center.distanceToSquared(points[j]);
+                    distances.push({ j, dist });
+                }
+                distances.sort((a, b) => a.dist - b.dist);
+                neighborMap[i] = distances.slice(0, neighborCount).map(d => d.j);
             }
+
+            const indices = [];
+            const triKeys = new Set();
+
+            for (let i = 0; i < points.length; i++) {
+                const p = points[i];
+                const neighbors = neighborMap[i];
+                if (neighbors.length < 2) continue;
+
+                const v1 = points[neighbors[0]].clone().sub(p);
+                const v2 = points[neighbors[1]].clone().sub(p);
+                const normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+                if (normal.lengthSq() < 1e-6) {
+                    normal.set(0, 1, 0);
+                }
+
+                const u = Math.abs(normal.x) < 0.9
+                    ? new THREE.Vector3(1, 0, 0).cross(normal).normalize()
+                    : new THREE.Vector3(0, 1, 0).cross(normal).normalize();
+                const v = new THREE.Vector3().crossVectors(normal, u);
+
+                const ordered = neighbors.map(idx => {
+                    const rel = points[idx].clone().sub(p);
+                    const proj = rel.sub(normal.clone().multiplyScalar(rel.dot(normal)));
+                    const angle = Math.atan2(proj.dot(v), proj.dot(u));
+                    return { idx, angle };
+                }).sort((a, b) => a.angle - b.angle);
+
+                for (let t = 0; t < ordered.length; t++) {
+                    const a = ordered[t].idx;
+                    const b = ordered[(t + 1) % ordered.length].idx;
+                    if (a === b || a === i || b === i) continue;
+                    const key = [i, a, b].sort((x, y) => x - y).join('-');
+                    if (triKeys.has(key)) continue;
+                    triKeys.add(key);
+                    indices.push(i, a, b);
+                }
+            }
+
+            if (indices.length === 0) return;
+
+            const geometry = new THREE.BufferGeometry();
+            const positionArray = new Float32Array(points.length * 3);
+            const colorArray = new Float32Array(points.length * 3);
+            for (let i = 0; i < points.length; i++) {
+                positionArray[i * 3] = points[i].x;
+                positionArray[i * 3 + 1] = points[i].y;
+                positionArray[i * 3 + 2] = points[i].z;
+                colorArray[i * 3] = colors[i][0];
+                colorArray[i * 3 + 1] = colors[i][1];
+                colorArray[i * 3 + 2] = colors[i][2];
+            }
+            geometry.setAttribute('position', new THREE.BufferAttribute(positionArray, 3));
             geometry.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
+            geometry.setIndex(indices);
+            geometry.computeVertexNormals();
 
             const material = new THREE.MeshStandardMaterial({
                 vertexColors: true,
-                flatShading: true,
+                flatShading: false,
                 transparent: true,
                 opacity: 0.9,
                 side: THREE.DoubleSide
@@ -2788,6 +2810,104 @@ HTML_TEMPLATE = """
         function rebuildPointCloudWithConfig() {
             if (!sourcePointCloudData) return;
             loadPointCloud(sourcePointCloudData, {preserveSource: true});
+        }
+
+        function colorAttrToByteTriplets(attr) {
+            if (!attr) return [];
+            const colors = [];
+            let maxVal = 0;
+            for (let i = 0; i < attr.count; i++) {
+                const r = attr.getX(i) || 0;
+                const g = attr.getY(i) || 0;
+                const b = attr.getZ(i) || 0;
+                maxVal = Math.max(maxVal, r, g, b);
+                colors.push([r, g, b]);
+            }
+            const needsUpscale = attr.normalized || maxVal <= 1.01;
+            if (needsUpscale) {
+                for (let i = 0; i < colors.length; i++) {
+                    colors[i] = colors[i].map(v => v * 255);
+                }
+            }
+            return colors;
+        }
+
+        function textureToColors(geometry, texture) {
+            if (!geometry || !texture || !texture.image || !geometry.attributes.uv) return [];
+            const img = texture.image;
+            const uvAttr = geometry.attributes.uv;
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            const colors = new Array(uvAttr.count);
+            const w = canvas.width;
+            const h = canvas.height;
+            for (let i = 0; i < uvAttr.count; i++) {
+                const u = uvAttr.getX(i);
+                const v = uvAttr.getY(i);
+                const px = Math.min(w - 1, Math.max(0, Math.floor(u * (w - 1))));
+                const py = Math.min(h - 1, Math.max(0, Math.floor((1 - v) * (h - 1))));
+                const idx = (py * w + px) * 4;
+                colors[i] = [data[idx], data[idx + 1], data[idx + 2]];
+            }
+            return colors;
+        }
+
+        function extractColorsFromGeometry(geometry, material) {
+            if (!geometry || !geometry.attributes?.position) return [];
+
+            const colorAttr = geometry.attributes.color;
+            if (colorAttr && colorAttr.count) {
+                return colorAttrToByteTriplets(colorAttr);
+            }
+
+            if (material && material.map) {
+                const texColors = textureToColors(geometry, material.map);
+                if (texColors.length) return texColors;
+            }
+
+            if (material && material.color) {
+                const c = material.color;
+                const count = geometry.attributes.position.count;
+                return new Array(count).fill([c.r * 255, c.g * 255, c.b * 255]);
+            }
+
+            return [];
+        }
+
+        function injectTextureVertexColors(geometry, material) {
+            if (!geometry || !material || !material.map || geometry.attributes.color) return;
+            const uvAttr = geometry.attributes.uv;
+            if (!uvAttr) return;
+            const img = material.map.image;
+            if (!img || !img.width || !img.height) return;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+            const colors = new Float32Array(uvAttr.count * 3);
+            const w = canvas.width;
+            const h = canvas.height;
+
+            for (let i = 0; i < uvAttr.count; i++) {
+                const u = uvAttr.getX(i);
+                const v = uvAttr.getY(i);
+                const px = Math.min(w - 1, Math.max(0, Math.floor(u * (w - 1))));
+                const py = Math.min(h - 1, Math.max(0, Math.floor((1 - v) * (h - 1))));
+                const idx = (py * w + px) * 4;
+                colors[i * 3] = data[idx] / 255;
+                colors[i * 3 + 1] = data[idx + 1] / 255;
+                colors[i * 3 + 2] = data[idx + 2] / 255;
+            }
+
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         }
 
         function loadPointCloud(data, options = {}) {
