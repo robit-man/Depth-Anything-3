@@ -582,8 +582,34 @@ def process_file():
         return jsonify({"error": "Model not loaded"}), 503
 
     # Get processing parameters
+    def parse_bool(key, default=False):
+        val = request.form.get(key)
+        if val is None:
+            return default
+        return str(val).lower() in {"1", "true", "yes", "on"}
+
     resolution = int(request.form.get('resolution', 504))
     max_points = int(request.form.get('max_points', 1000000))
+    process_res_method = request.form.get('process_res_method', 'upper_bound_resize')
+    valid_methods = {'upper_bound_resize', 'upper_bound_crop', 'lower_bound_resize', 'lower_bound_crop'}
+    if process_res_method not in valid_methods:
+        process_res_method = 'upper_bound_resize'
+
+    align_to_input_scale = parse_bool('align_to_input_ext_scale', True)
+    infer_gs = parse_bool('infer_gs', False)
+    conf_thresh_percentile = float(request.form.get('conf_thresh_percentile', 40.0))
+    show_cameras = parse_bool('show_cameras', True)
+    feat_vis_fps = int(request.form.get('feat_vis_fps', 15))
+    include_confidence = parse_bool('include_confidence', False)
+    apply_confidence_filter = parse_bool('apply_confidence_filter', False)
+
+    export_feat_layers_raw = request.form.get('export_feat_layers', '')
+    export_feat_layers = []
+    if export_feat_layers_raw:
+        for layer in export_feat_layers_raw.split(','):
+            layer = layer.strip()
+            if layer.isdigit():
+                export_feat_layers.append(int(layer))
 
     # Process in background
     job_id = f"job_{int(time.time() * 1000)}"
@@ -618,7 +644,14 @@ def process_file():
                 prediction = state.model.inference(
                     image=frames,
                     process_res=resolution,
-                    num_max_points=max_points
+                    process_res_method=process_res_method,
+                    num_max_points=max_points,
+                    align_to_input_ext_scale=align_to_input_scale,
+                    infer_gs=infer_gs,
+                    export_feat_layers=export_feat_layers,
+                    conf_thresh_percentile=conf_thresh_percentile,
+                    show_cameras=show_cameras,
+                    feat_vis_fps=feat_vis_fps
                 )
             else:
                 # Process single image
@@ -628,14 +661,43 @@ def process_file():
                 prediction = state.model.inference(
                     image=[img],
                     process_res=resolution,
-                    num_max_points=max_points
+                    process_res_method=process_res_method,
+                    num_max_points=max_points,
+                    align_to_input_ext_scale=align_to_input_scale,
+                    infer_gs=infer_gs,
+                    export_feat_layers=export_feat_layers,
+                    conf_thresh_percentile=conf_thresh_percentile,
+                    show_cameras=show_cameras,
+                    feat_vis_fps=feat_vis_fps
                 )
 
             # Extract point cloud data from depth maps and images
             # Use the helper function from api_endpoints if available
             try:
                 from api_endpoints import prediction_to_point_cloud_json
-                point_cloud = prediction_to_point_cloud_json(prediction, max_points=max_points)
+                point_cloud = prediction_to_point_cloud_json(
+                    prediction,
+                    max_points=max_points,
+                    include_confidence=include_confidence or apply_confidence_filter
+                )
+
+                if apply_confidence_filter and "confidence" in point_cloud:
+                    conf_values = np.array(point_cloud["confidence"], dtype=np.float32)
+                    vertices = np.array(point_cloud["vertices"], dtype=np.float32)
+                    colors = np.array(point_cloud["colors"], dtype=np.float32)
+
+                    threshold = np.percentile(conf_values, conf_thresh_percentile)
+                    mask = conf_values >= threshold
+
+                    vertices = vertices[mask]
+                    colors = colors[mask]
+                    conf_values = conf_values[mask]
+
+                    point_cloud["vertices"] = vertices.tolist()
+                    point_cloud["colors"] = colors.tolist()
+                    point_cloud["metadata"]["num_points"] = int(len(vertices))
+                    if include_confidence:
+                        point_cloud["confidence"] = conf_values.tolist()
 
                 state.current_pointcloud = {
                     "vertices": point_cloud["vertices"],
@@ -646,14 +708,24 @@ def process_file():
                         "filename": filename
                     }
                 }
+                if include_confidence and "confidence" in point_cloud:
+                    state.current_pointcloud["confidence"] = point_cloud["confidence"]
             except ImportError:
                 # Fallback: manual extraction
                 points_list = []
                 colors_list = []
+                conf_list = []
+
+                confidence_maps = None
+                if apply_confidence_filter or include_confidence:
+                    confidence_maps = getattr(prediction, "conf", None)
 
                 for i in range(len(prediction.depth)):
                     depth = prediction.depth[i]
                     image = prediction.processed_images[i]
+                    conf_map = None
+                    if confidence_maps is not None and i < len(confidence_maps):
+                        conf_map = confidence_maps[i]
 
                     # Get intrinsics
                     ixt = prediction.intrinsics[i]
@@ -671,23 +743,38 @@ def process_file():
 
                     points = np.stack([x3d, y3d, z3d], axis=-1).reshape(-1, 3)
                     colors = image.reshape(-1, 3)
+                    conf_flat = conf_map.reshape(-1) if conf_map is not None else None
 
                     # Filter valid points
                     valid = depth.reshape(-1) > 0
                     points = points[valid]
                     colors = colors[valid]
+                    if conf_flat is not None:
+                        conf_flat = conf_flat[valid]
 
                     points_list.append(points)
                     colors_list.append(colors)
+                    if conf_flat is not None:
+                        conf_list.append(conf_flat)
 
                 all_points = np.vstack(points_list)
                 all_colors = np.vstack(colors_list)
+                all_conf = np.hstack(conf_list) if conf_list else None
+
+                if apply_confidence_filter and all_conf is not None and len(all_conf) > 0:
+                    threshold = np.percentile(all_conf, conf_thresh_percentile)
+                    mask = all_conf >= threshold
+                    all_points = all_points[mask]
+                    all_colors = all_colors[mask]
+                    all_conf = all_conf[mask]
 
                 # Subsample if needed
                 if max_points and len(all_points) > max_points:
                     indices = np.random.choice(len(all_points), max_points, replace=False)
                     all_points = all_points[indices]
                     all_colors = all_colors[indices]
+                    if all_conf is not None:
+                        all_conf = all_conf[indices]
 
                 state.current_pointcloud = {
                     "vertices": all_points.tolist(),
@@ -697,6 +784,23 @@ def process_file():
                         "resolution": resolution,
                         "filename": filename
                     }
+                }
+                if include_confidence and all_conf is not None:
+                    state.current_pointcloud["confidence"] = all_conf.tolist()
+
+            if state.current_pointcloud and "metadata" in state.current_pointcloud:
+                state.current_pointcloud["metadata"]["config"] = {
+                    "process_res": resolution,
+                    "process_res_method": process_res_method,
+                    "max_points": max_points,
+                    "align_to_input_ext_scale": align_to_input_scale,
+                    "infer_gs": infer_gs,
+                    "export_feat_layers": export_feat_layers,
+                    "conf_thresh_percentile": conf_thresh_percentile,
+                    "show_cameras": show_cameras,
+                    "feat_vis_fps": feat_vis_fps,
+                    "include_confidence": include_confidence,
+                    "apply_confidence_filter": apply_confidence_filter
                 }
 
             state.processing_jobs[job_id] = {
@@ -865,6 +969,7 @@ HTML_TEMPLATE = """
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/ConvexGeometry.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -1170,6 +1275,87 @@ HTML_TEMPLATE = """
             border-color: rgba(16, 185, 129, 0.5);
         }
 
+        /* Config modal */
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 14px;
+        }
+
+        .config-section {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+
+        .config-section h4 {
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: #93c5fd;
+            letter-spacing: 0.3px;
+        }
+
+        .config-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 6px 0;
+            font-size: 13px;
+        }
+
+        .config-row label {
+            flex: 1 1 55%;
+            color: #cbd5e1;
+        }
+
+        .config-row input,
+        .config-row select {
+            flex: 1 1 45%;
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 7px 8px;
+            color: #fff;
+            font-size: 13px;
+        }
+
+        .config-row input[type="checkbox"] {
+            flex: 0 0 auto;
+            width: 18px;
+            height: 18px;
+            accent-color: #3b82f6;
+        }
+
+        .config-subtext {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+
+        .config-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .config-footer button {
+            padding: 10px 16px;
+            background: rgba(59, 130, 246, 0.25);
+            border: 1px solid rgba(59, 130, 246, 0.6);
+            border-radius: 10px;
+            color: #fff;
+            cursor: pointer;
+        }
+
+        .config-footer button.secondary {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.12);
+        }
+
         /* Status indicator */
         .status-indicator {
             position: fixed;
@@ -1230,6 +1416,9 @@ HTML_TEMPLATE = """
         <div class="title">
             <i class="fas fa-cube"></i> Depth Anything 3
         </div>
+        <button onclick="showConfigModal()" id="config-btn">
+            <i class="fas fa-sliders-h"></i> Configure
+        </button>
         <button onclick="showModelSelector()">
             <i class="fas fa-brain"></i>
             <span id="current-model-name">Select Model</span>
@@ -1318,6 +1507,118 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Config modal -->
+    <div class="modal" id="config-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fas fa-sliders-h"></i> Viewer & Model Config</h2>
+                <button class="modal-close" onclick="closeConfigModal()">×</button>
+            </div>
+            <div class="config-grid">
+                <div class="config-section">
+                    <h4>DA3 Inference</h4>
+                    <div class="config-row">
+                        <label for="process-res-input">Processing Resolution</label>
+                        <input type="number" id="process-res-input" min="256" max="2048" step="16" value="504">
+                    </div>
+                    <div class="config-row">
+                        <label for="process-res-method">Resize Method</label>
+                        <select id="process-res-method">
+                            <option value="upper_bound_resize">upper_bound_resize</option>
+                            <option value="upper_bound_crop">upper_bound_crop</option>
+                            <option value="lower_bound_resize">lower_bound_resize</option>
+                            <option value="lower_bound_crop">lower_bound_crop</option>
+                        </select>
+                    </div>
+                    <div class="config-row">
+                        <label for="max-points-input">Max Points</label>
+                        <input type="number" id="max-points-input" min="10000" max="2000000" step="10000" value="1000000">
+                    </div>
+                    <div class="config-row">
+                        <label for="align-scale-checkbox">Align to Input Scale</label>
+                        <input type="checkbox" id="align-scale-checkbox" checked>
+                    </div>
+                    <div class="config-row">
+                        <label for="infer-gs-checkbox">Infer Gaussian Splat</label>
+                        <input type="checkbox" id="infer-gs-checkbox">
+                    </div>
+                    <div class="config-row">
+                        <label for="export-feat-layers">Export Feature Layers</label>
+                        <input type="text" id="export-feat-layers" placeholder="e.g. 0,1,2">
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h4>Depth Filtering</h4>
+                    <div class="config-row">
+                        <label for="confidence-filter-toggle">Filter by Confidence</label>
+                        <input type="checkbox" id="confidence-filter-toggle">
+                    </div>
+                    <div class="config-row">
+                        <label for="confidence-percentile-input">Confidence Percentile</label>
+                        <input type="number" id="confidence-percentile-input" min="0" max="100" step="1" value="40">
+                    </div>
+                    <div class="config-row">
+                        <label for="include-confidence-toggle">Return Confidence</label>
+                        <input type="checkbox" id="include-confidence-toggle">
+                    </div>
+                    <div class="config-row">
+                        <label for="show-cameras-toggle">Show Cameras in Exports</label>
+                        <input type="checkbox" id="show-cameras-toggle" checked>
+                    </div>
+                    <div class="config-row">
+                        <label for="feat-vis-fps-input">Feature Vis FPS</label>
+                        <input type="number" id="feat-vis-fps-input" min="1" max="60" step="1" value="15">
+                    </div>
+                    <div class="config-subtext">These map directly to DA3 inference options so you can drive the full library feature set.</div>
+                </div>
+
+                <div class="config-section">
+                    <h4>Point Cloud Styling</h4>
+                    <div class="config-row">
+                        <label for="point-size-input">Point Size</label>
+                        <input type="number" id="point-size-input" min="0.002" max="0.1" step="0.001" value="0.01">
+                    </div>
+                    <div class="config-row">
+                        <label for="point-shape-select">Point Shape</label>
+                        <select id="point-shape-select">
+                            <option value="circle">Circle</option>
+                            <option value="square">Square</option>
+                        </select>
+                    </div>
+                    <div class="config-row">
+                        <label for="mesh-toggle">Generate Mesh</label>
+                        <input type="checkbox" id="mesh-toggle">
+                    </div>
+                    <div class="config-row">
+                        <label for="mesh-sample-input">Mesh Sample Points</label>
+                        <input type="number" id="mesh-sample-input" min="500" max="20000" step="500" value="8000">
+                    </div>
+                    <div class="config-row">
+                        <label for="fill-sparse-toggle">Fill Sparse Distance Gaps</label>
+                        <input type="checkbox" id="fill-sparse-toggle">
+                    </div>
+                    <div class="config-row">
+                        <label for="fill-distance-input">Sparse Distance Threshold</label>
+                        <input type="number" id="fill-distance-input" min="0.1" max="20" step="0.1" value="5">
+                    </div>
+                    <div class="config-row">
+                        <label for="fill-neighbors-input">Neighbor Blend Count</label>
+                        <input type="number" id="fill-neighbors-input" min="1" max="10" step="1" value="3">
+                    </div>
+                    <div class="config-row">
+                        <label for="fill-newpoints-input">New Points (max)</label>
+                        <input type="number" id="fill-newpoints-input" min="0" max="50000" step="500" value="5000">
+                    </div>
+                </div>
+            </div>
+            <div class="config-footer">
+                <button class="secondary" onclick="resetConfigToDefaults()">Reset</button>
+                <button onclick="applyConfigFromModal()">Apply</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Status indicator -->
     <div class="status-indicator">
         <div class="status-item">
@@ -1349,6 +1650,32 @@ HTML_TEMPLATE = """
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
         let originalPointCloudData = null;  // Store original point cloud data for color restoration
+        let sourcePointCloudData = null;    // Raw data from backend/upload (unmodified)
+        let activePointCloudData = null;    // Data after applying viewer config transforms
+        let meshObject = null;
+
+        const defaultConfig = {
+            processRes: 504,
+            processResMethod: 'upper_bound_resize',
+            maxPoints: 1000000,
+            alignToInputScale: true,
+            inferGS: false,
+            exportFeatLayers: '',
+            applyConfidenceFilter: false,
+            confidencePercentile: 40,
+            includeConfidence: false,
+            showCameras: true,
+            featVisFps: 15,
+            pointSize: 0.01,
+            pointShape: 'circle',
+            generateMesh: false,
+            meshSamplePoints: 8000,
+            fillSparse: false,
+            sparseFillDistance: 5,
+            sparseFillNeighbors: 3,
+            sparseFillNewPoints: 5000
+        };
+        let viewerConfig = {...defaultConfig};
 
         // Camera mode tracking
         const CAMERA_MODES = ['ORBIT', 'FLY', 'FPS'];
@@ -1794,6 +2121,113 @@ HTML_TEMPLATE = """
             console.log('Pointer lock controls ready: Hold mouse button for 3 seconds to activate');
         }
 
+        function syncConfigModalFromState() {
+            const setVal = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    if (el.type === 'checkbox') {
+                        el.checked = Boolean(value);
+                    } else {
+                        el.value = value;
+                    }
+                }
+            };
+
+            setVal('process-res-input', viewerConfig.processRes);
+            setVal('process-res-method', viewerConfig.processResMethod);
+            setVal('max-points-input', viewerConfig.maxPoints);
+            setVal('align-scale-checkbox', viewerConfig.alignToInputScale);
+            setVal('infer-gs-checkbox', viewerConfig.inferGS);
+            setVal('export-feat-layers', viewerConfig.exportFeatLayers);
+            setVal('confidence-filter-toggle', viewerConfig.applyConfidenceFilter);
+            setVal('confidence-percentile-input', viewerConfig.confidencePercentile);
+            setVal('include-confidence-toggle', viewerConfig.includeConfidence);
+            setVal('show-cameras-toggle', viewerConfig.showCameras);
+            setVal('feat-vis-fps-input', viewerConfig.featVisFps);
+            setVal('point-size-input', viewerConfig.pointSize);
+            setVal('point-shape-select', viewerConfig.pointShape);
+            setVal('mesh-toggle', viewerConfig.generateMesh);
+            setVal('mesh-sample-input', viewerConfig.meshSamplePoints);
+            setVal('fill-sparse-toggle', viewerConfig.fillSparse);
+            setVal('fill-distance-input', viewerConfig.sparseFillDistance);
+            setVal('fill-neighbors-input', viewerConfig.sparseFillNeighbors);
+            setVal('fill-newpoints-input', viewerConfig.sparseFillNewPoints);
+        }
+
+        function showConfigModal() {
+            syncConfigModalFromState();
+            document.getElementById('config-modal').classList.add('active');
+        }
+
+        function closeConfigModal() {
+            document.getElementById('config-modal').classList.remove('active');
+        }
+
+        function applyConfigFromModal(closeAfter = true) {
+            const numVal = (id, fallback) => {
+                const el = document.getElementById(id);
+                const parsed = parseFloat(el?.value);
+                return Number.isNaN(parsed) ? fallback : parsed;
+            };
+            const intVal = (id, fallback) => {
+                const el = document.getElementById(id);
+                const parsed = parseInt(el?.value);
+                return Number.isNaN(parsed) ? fallback : parsed;
+            };
+            const checked = (id, fallback) => {
+                const el = document.getElementById(id);
+                return el ? el.checked : fallback;
+            };
+            const textVal = (id, fallback) => {
+                const el = document.getElementById(id);
+                return el ? el.value : fallback;
+            };
+
+            viewerConfig.processRes = intVal('process-res-input', viewerConfig.processRes);
+            viewerConfig.processResMethod = textVal('process-res-method', viewerConfig.processResMethod);
+            viewerConfig.maxPoints = intVal('max-points-input', viewerConfig.maxPoints);
+            viewerConfig.alignToInputScale = checked('align-scale-checkbox', viewerConfig.alignToInputScale);
+            viewerConfig.inferGS = checked('infer-gs-checkbox', viewerConfig.inferGS);
+            viewerConfig.exportFeatLayers = textVal('export-feat-layers', viewerConfig.exportFeatLayers);
+            viewerConfig.applyConfidenceFilter = checked('confidence-filter-toggle', viewerConfig.applyConfidenceFilter);
+            viewerConfig.confidencePercentile = numVal('confidence-percentile-input', viewerConfig.confidencePercentile);
+            viewerConfig.includeConfidence = checked('include-confidence-toggle', viewerConfig.includeConfidence);
+            viewerConfig.showCameras = checked('show-cameras-toggle', viewerConfig.showCameras);
+            viewerConfig.featVisFps = intVal('feat-vis-fps-input', viewerConfig.featVisFps);
+            viewerConfig.pointSize = numVal('point-size-input', viewerConfig.pointSize);
+            viewerConfig.pointShape = textVal('point-shape-select', viewerConfig.pointShape);
+            viewerConfig.generateMesh = checked('mesh-toggle', viewerConfig.generateMesh);
+            viewerConfig.meshSamplePoints = intVal('mesh-sample-input', viewerConfig.meshSamplePoints);
+            viewerConfig.fillSparse = checked('fill-sparse-toggle', viewerConfig.fillSparse);
+            viewerConfig.sparseFillDistance = numVal('fill-distance-input', viewerConfig.sparseFillDistance);
+            viewerConfig.sparseFillNeighbors = intVal('fill-neighbors-input', viewerConfig.sparseFillNeighbors);
+            viewerConfig.sparseFillNewPoints = intVal('fill-newpoints-input', viewerConfig.sparseFillNewPoints);
+
+            applyPointMaterialSettings();
+            rebuildPointCloudWithConfig();
+            if (viewerConfig.generateMesh) {
+                buildMeshFromActiveCloud();
+            } else {
+                removeMesh();
+            }
+
+            if (closeAfter) {
+                closeConfigModal();
+            }
+        }
+
+        function resetConfigToDefaults() {
+            viewerConfig = {...defaultConfig};
+            syncConfigModalFromState();
+            applyPointMaterialSettings();
+            rebuildPointCloudWithConfig();
+            if (viewerConfig.generateMesh) {
+                buildMeshFromActiveCloud();
+            } else {
+                removeMesh();
+            }
+        }
+
         // Model selection
         async function showModelSelector() {
             const modal = document.getElementById('model-modal');
@@ -1928,8 +2362,17 @@ HTML_TEMPLATE = """
 
             const formData = new FormData();
             formData.append('file', file);
-            formData.append('resolution', 504);
-            formData.append('max_points', 1000000);
+            formData.append('resolution', viewerConfig.processRes);
+            formData.append('max_points', viewerConfig.maxPoints);
+            formData.append('process_res_method', viewerConfig.processResMethod);
+            formData.append('align_to_input_ext_scale', viewerConfig.alignToInputScale);
+            formData.append('infer_gs', viewerConfig.inferGS);
+            formData.append('export_feat_layers', viewerConfig.exportFeatLayers);
+            formData.append('conf_thresh_percentile', viewerConfig.confidencePercentile);
+            formData.append('apply_confidence_filter', viewerConfig.applyConfidenceFilter);
+            formData.append('include_confidence', viewerConfig.includeConfidence);
+            formData.append('show_cameras', viewerConfig.showCameras);
+            formData.append('feat_vis_fps', viewerConfig.featVisFps);
 
             document.getElementById('model-status-text').textContent = 'Uploading...';
 
@@ -2001,16 +2444,50 @@ HTML_TEMPLATE = """
                     loadedPoints = gltf.scene;
                 }
 
-                pointCloud = loadedPoints;
-                scene.add(pointCloud);
+                if (loadedPoints && loadedPoints.isPoints && loadedPoints.geometry && loadedPoints.geometry.attributes.position) {
+                    const positions = loadedPoints.geometry.attributes.position;
+                    const colorAttr = loadedPoints.geometry.attributes.color;
+                    const vertices = [];
+                    const colors = [];
 
-                // Update UI/state
-                // Try to count points if geometry exists
-                let numPoints = 0;
-                if (pointCloud.isPoints && pointCloud.geometry && pointCloud.geometry.attributes.position) {
-                    numPoints = pointCloud.geometry.attributes.position.count;
+                    for (let i = 0; i < positions.count; i++) {
+                        vertices.push([
+                            positions.getX(i),
+                            positions.getY(i),
+                            positions.getZ(i)
+                        ]);
+                        if (colorAttr) {
+                            colors.push([
+                                (colorAttr.getX(i) || 0) * (colorAttr.normalized ? 255 : 1),
+                                (colorAttr.getY(i) || 0) * (colorAttr.normalized ? 255 : 1),
+                                (colorAttr.getZ(i) || 0) * (colorAttr.normalized ? 255 : 1)
+                            ]);
+                        }
+                    }
+
+                    const resolvedColors = colors.length ? colors : vertices.map(() => [255, 255, 255]);
+
+                    loadPointCloud({
+                        vertices,
+                        colors: resolvedColors,
+                        metadata: {
+                            num_points: vertices.length,
+                            filename: file.name,
+                            source: 'glb_upload'
+                        }
+                    });
+                } else {
+                    removeMesh();
+                    pointCloud = loadedPoints;
+                    scene.add(pointCloud);
+
+                    let numPoints = 0;
+                    if (pointCloud.isPoints && pointCloud.geometry && pointCloud.geometry.attributes.position) {
+                        numPoints = pointCloud.geometry.attributes.position.count;
+                    }
+                    document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
                 }
-                document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
+
                 document.getElementById('model-status-text').textContent = 'Model: Ready';
                 document.getElementById('export-btn').disabled = false;
                 document.getElementById('floor-btn').disabled = false;
@@ -2053,51 +2530,262 @@ HTML_TEMPLATE = """
             }, 1000);
         }
 
-        function loadPointCloud(data) {
-            try {
-                console.log('Loading point cloud with', data.metadata.num_points, 'points');
+        function applyConfigToPointCloudData(rawData) {
+            if (!rawData) return null;
+            if (!viewerConfig.fillSparse) {
+                return rawData;
+            }
+            return densifyPointCloudData(rawData);
+        }
 
-                // Store original data for color restoration
-                originalPointCloudData = {
-                    vertices: data.vertices,
-                    colors: data.colors,
-                    metadata: data.metadata
-                };
+        function densifyPointCloudData(rawData) {
+            const baseVertices = (rawData.vertices || []).slice();
+            if (!baseVertices.length) return rawData;
+
+            const baseColors = (
+                rawData.colors && rawData.colors.length
+                    ? rawData.colors.slice()
+                    : baseVertices.map(() => [255, 255, 255])
+            );
+
+            const farIndices = [];
+            const targetDistance = Math.max(0.1, viewerConfig.sparseFillDistance);
+            baseVertices.forEach((v, idx) => {
+                const dist = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                if (dist > targetDistance) farIndices.push(idx);
+            });
+
+            if (!farIndices.length || viewerConfig.sparseFillNewPoints <= 0) {
+                return rawData;
+            }
+
+            const newVertices = baseVertices.slice();
+            const newColors = baseColors.slice();
+            const sampleCount = Math.min(viewerConfig.sparseFillNewPoints, farIndices.length);
+
+            for (let i = 0; i < sampleCount; i++) {
+                const anchorIdx = farIndices[Math.floor(Math.random() * farIndices.length)];
+                const neighborIndices = [];
+                const neighborTotal = Math.max(1, viewerConfig.sparseFillNeighbors);
+                for (let n = 0; n < neighborTotal; n++) {
+                    neighborIndices.push(farIndices[Math.floor(Math.random() * farIndices.length)]);
+                }
+
+                const anchor = baseVertices[anchorIdx];
+                const neighborAvg = neighborIndices.reduce((acc, idx) => {
+                    const v = baseVertices[idx];
+                    acc[0] += v[0];
+                    acc[1] += v[1];
+                    acc[2] += v[2];
+                    return acc;
+                }, [0, 0, 0]).map(sum => sum / neighborIndices.length);
+
+                const newPoint = [
+                    (anchor[0] + neighborAvg[0]) / 2,
+                    (anchor[1] + neighborAvg[1]) / 2,
+                    (anchor[2] + neighborAvg[2]) / 2
+                ];
+
+                const anchorColor = baseColors[anchorIdx] || [255, 255, 255];
+                const neighborColor = neighborIndices.reduce((acc, idx) => {
+                    const c = baseColors[idx] || [255, 255, 255];
+                    acc[0] += c[0];
+                    acc[1] += c[1];
+                    acc[2] += c[2];
+                    return acc;
+                }, [0, 0, 0]).map(sum => sum / neighborIndices.length);
+
+                const newColor = [
+                    (anchorColor[0] + neighborColor[0]) / 2,
+                    (anchorColor[1] + neighborColor[1]) / 2,
+                    (anchorColor[2] + neighborColor[2]) / 2
+                ];
+
+                newVertices.push(newPoint);
+                newColors.push(newColor);
+            }
+
+            return {
+                vertices: newVertices,
+                colors: newColors,
+                metadata: {
+                    ...(rawData.metadata || {}),
+                    num_points: newVertices.length,
+                    dense_fill: true
+                }
+            };
+        }
+
+        function createPointsMaterial() {
+            const material = new THREE.PointsMaterial({
+                size: viewerConfig.pointSize,
+                vertexColors: true,
+                sizeAttenuation: true,
+                transparent: true,
+                depthWrite: false
+            });
+
+            material.onBeforeCompile = (shader) => {
+                if (viewerConfig.pointShape === 'circle') {
+                    shader.fragmentShader = shader.fragmentShader.replace(
+                        '#include <alphatest_fragment>',
+                        'if (length(gl_PointCoord - 0.5) > 0.5) discard;\\n#include <alphatest_fragment>'
+                    );
+                }
+            };
+            material.needsUpdate = true;
+            return material;
+        }
+
+        function applyPointMaterialSettings() {
+            if (!pointCloud || !pointCloud.material) return;
+            const oldMaterial = pointCloud.material;
+            const newMaterial = createPointsMaterial();
+            pointCloud.material = newMaterial;
+            if (oldMaterial.dispose) oldMaterial.dispose();
+        }
+
+        function removeMesh() {
+            if (meshObject) {
+                scene.remove(meshObject);
+                if (meshObject.geometry) meshObject.geometry.dispose();
+                if (meshObject.material && meshObject.material.dispose) {
+                    meshObject.material.dispose();
+                }
+                meshObject = null;
+            }
+        }
+
+        function buildMeshFromActiveCloud() {
+            if (!viewerConfig.generateMesh || !activePointCloudData || !THREE.ConvexGeometry) return;
+            removeMesh();
+
+            const vertices = activePointCloudData.vertices || [];
+            if (!vertices.length) return;
+
+            const baseColors = (
+                activePointCloudData.colors && activePointCloudData.colors.length
+                    ? activePointCloudData.colors
+                    : vertices.map(() => [255, 255, 255])
+            );
+
+            const sampleCount = Math.min(viewerConfig.meshSamplePoints, vertices.length);
+            const sampleIndices = new Set();
+            while (sampleIndices.size < sampleCount) {
+                sampleIndices.add(Math.floor(Math.random() * vertices.length));
+            }
+
+            const points = [];
+            const colorLookup = new Map();
+            sampleIndices.forEach((idx) => {
+                const v = vertices[idx];
+                const key = `${v[0].toFixed(5)}|${v[1].toFixed(5)}|${v[2].toFixed(5)}`;
+                points.push(new THREE.Vector3(v[0], v[1], v[2]));
+                const c = baseColors[idx] || [255, 255, 255];
+                colorLookup.set(key, [c[0] / 255, c[1] / 255, c[2] / 255]);
+            });
+
+            const geometry = new THREE.ConvexGeometry(points);
+            const colorArray = new Float32Array(geometry.attributes.position.count * 3);
+            const posAttr = geometry.attributes.position;
+            for (let i = 0; i < posAttr.count; i++) {
+                const key = `${posAttr.getX(i).toFixed(5)}|${posAttr.getY(i).toFixed(5)}|${posAttr.getZ(i).toFixed(5)}`;
+                const c = colorLookup.get(key) || [1, 1, 1];
+                colorArray[i * 3] = c[0];
+                colorArray[i * 3 + 1] = c[1];
+                colorArray[i * 3 + 2] = c[2];
+            }
+            geometry.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
+
+            const material = new THREE.MeshStandardMaterial({
+                vertexColors: true,
+                flatShading: true,
+                transparent: true,
+                opacity: 0.9,
+                side: THREE.DoubleSide
+            });
+
+            meshObject = new THREE.Mesh(geometry, material);
+            scene.add(meshObject);
+        }
+
+        function rebuildPointCloudWithConfig() {
+            if (!sourcePointCloudData) return;
+            loadPointCloud(sourcePointCloudData, {preserveSource: true});
+        }
+
+        function loadPointCloud(data, options = {}) {
+            const { preserveSource = false } = options;
+            try {
+                const shouldUpdateSource = !preserveSource || !sourcePointCloudData;
+                if (shouldUpdateSource) {
+                    sourcePointCloudData = data;
+                }
+
+                const workingSource = preserveSource ? (sourcePointCloudData || data) : data;
+                const processed = applyConfigToPointCloudData(workingSource);
+                if (!processed.metadata) {
+                    processed.metadata = {};
+                }
+                if (!processed.metadata.num_points) {
+                    processed.metadata.num_points = processed.vertices.length;
+                }
+                activePointCloudData = processed;
+                originalPointCloudData = processed;
 
                 // Remove existing point cloud
                 if (pointCloud) {
                     scene.remove(pointCloud);
+                    if (pointCloud.geometry) pointCloud.geometry.dispose();
+                    if (pointCloud.material && pointCloud.material.dispose) {
+                        pointCloud.material.dispose();
+                    }
                 }
+
+                removeMesh();
 
                 // Create geometry
                 const geometry = new THREE.BufferGeometry();
-
-                const vertices = new Float32Array(data.vertices.flat());
-                const colors = new Float32Array(data.colors.flat().map(c => c / 255));
-
-                console.log('Vertices:', vertices.length / 3, 'Colors:', colors.length / 3);
+                const vertices = new Float32Array(processed.vertices.flat());
+                const normalizedColorsSource = (
+                    processed.colors && processed.colors.length
+                        ? processed.colors
+                        : processed.vertices.map(() => [255, 255, 255])
+                );
+                if (!processed.colors || !processed.colors.length) {
+                    processed.colors = normalizedColorsSource;
+                }
+                const colors = new Float32Array(normalizedColorsSource.flat().map(c => c / 255));
 
                 geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
                 geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
                 // Create material
-                const material = new THREE.PointsMaterial({
-                    size: 0.01,
-                    vertexColors: true
-                });
+                const material = createPointsMaterial();
 
                 // Create point cloud
                 pointCloud = new THREE.Points(geometry, material);
                 scene.add(pointCloud);
 
                 // Update stats
-                document.getElementById('points-count').textContent = `Points: ${data.metadata.num_points.toLocaleString()}`;
+                const numPoints = processed.metadata?.num_points || processed.vertices.length;
+                document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+                document.getElementById('export-btn').disabled = false;
+                document.getElementById('floor-btn').disabled = false;
+                document.getElementById('manual-floor-btn').disabled = false;
+                document.getElementById('camera-mode-btn').disabled = false;
+                document.getElementById('reset-btn').disabled = false;
 
                 // Center camera
                 const box = new THREE.Box3().setFromObject(pointCloud);
                 const center = box.getCenter(new THREE.Vector3());
                 camera.lookAt(center);
                 if (controls) controls.update(0);
+
+                if (viewerConfig.generateMesh) {
+                    buildMeshFromActiveCloud();
+                }
 
                 console.log('Point cloud loaded successfully');
             } catch (error) {
@@ -2243,9 +2931,11 @@ HTML_TEMPLATE = """
 
             const colors = pointCloud.geometry.attributes.color.array;
             const originalColors = originalPointCloudData.colors;
+            if (!originalColors || !originalColors.length) return;
+            const limit = Math.min(originalColors.length, colors.length / 3);
 
             // Restore original colors
-            for (let i = 0; i < originalColors.length; i++) {
+            for (let i = 0; i < limit; i++) {
                 for (let j = 0; j < 3; j++) {
                     colors[i * 3 + j] = originalColors[i][j] / 255;
                 }
@@ -2372,6 +3062,18 @@ HTML_TEMPLATE = """
             if (originalPointCloudData) {
                 originalPointCloudData.vertices = newVertices;
             }
+            if (activePointCloudData) {
+                activePointCloudData.vertices = newVertices;
+                if (activePointCloudData.metadata) {
+                    activePointCloudData.metadata.num_points = newVertices.length;
+                }
+            }
+            if (sourcePointCloudData) {
+                sourcePointCloudData.vertices = newVertices;
+                if (sourcePointCloudData.metadata) {
+                    sourcePointCloudData.metadata.num_points = newVertices.length;
+                }
+            }
 
             // Exit selection mode (this will restore original colors)
             toggleManualFloorSelection();
@@ -2469,9 +3171,13 @@ HTML_TEMPLATE = """
         function setupModalCloseHandler() {
             // Close modal when clicking outside
             window.addEventListener('click', (e) => {
-                const modal = document.getElementById('model-modal');
-                if (modal && e.target === modal) {
+                const modelModal = document.getElementById('model-modal');
+                const configModal = document.getElementById('config-modal');
+                if (modelModal && e.target === modelModal) {
                     closeModelSelector();
+                }
+                if (configModal && e.target === configModal) {
+                    closeConfigModal();
                 }
             });
         }
@@ -2498,6 +3204,7 @@ HTML_TEMPLATE = """
             setupKeyboardControls();
             setupPointerLockControls();
             setupManualFloorSelection();
+            syncConfigModalFromState();
             console.log('Event handlers setup complete');
 
             // Update model status
