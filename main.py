@@ -2301,6 +2301,11 @@ HTML_TEMPLATE = """
                     document.getElementById('model-status-text').textContent = 'Model: Loading...';
                     document.getElementById('model-status-icon').className = 'fas fa-spinner fa-spin status-icon status-loading';
                     document.getElementById('progress-bar').style.display = 'block';
+                    const loadBtn = document.getElementById('load-model-btn');
+                    if (loadBtn) {
+                        loadBtn.disabled = true;
+                        loadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+                    }
 
                     // Poll for status
                     pollModelStatus();
@@ -2322,12 +2327,56 @@ HTML_TEMPLATE = """
 
                 if (data.status === 'ready') {
                     clearInterval(interval);
-                    document.getElementById('model-status-text').textContent = 'Model: Ready';
-                    document.getElementById('model-status-icon').className = 'fas fa-check-circle status-icon status-ready';
-                    document.getElementById('progress-bar').style.display = 'none';
-                    updateModelStatus();
+                    applyModelStatus(data);
                 }
             }, 2000);
+        }
+
+        function applyModelStatus(statusData, currentModelName = null) {
+            const textEl = document.getElementById('model-status-text');
+            const iconEl = document.getElementById('model-status-icon');
+            const progressBar = document.getElementById('progress-bar');
+            const loadBtn = document.getElementById('load-model-btn');
+
+            const setButtonsEnabled = (enabled) => {
+                ['export-btn', 'floor-btn', 'manual-floor-btn', 'camera-mode-btn', 'reset-btn'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.disabled = !enabled;
+                });
+            };
+
+            if (statusData.status === 'ready') {
+                textEl.textContent = 'Model: Ready';
+                iconEl.className = 'fas fa-check-circle status-icon status-ready';
+                progressBar.style.display = 'none';
+                setButtonsEnabled(true);
+                if (loadBtn) {
+                    loadBtn.disabled = true;
+                    loadBtn.innerHTML = '<i class="fas fa-check-circle"></i> Model Loaded';
+                }
+            } else if (statusData.status === 'loading') {
+                textEl.textContent = 'Model: Loading...';
+                iconEl.className = 'fas fa-spinner fa-spin status-icon status-loading';
+                progressBar.style.display = 'block';
+                setButtonsEnabled(false);
+                if (loadBtn) {
+                    loadBtn.disabled = true;
+                    loadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+                }
+            } else {
+                textEl.textContent = 'Model: Not loaded';
+                iconEl.className = 'fas fa-brain status-icon';
+                progressBar.style.display = 'none';
+                setButtonsEnabled(false);
+                if (loadBtn) {
+                    loadBtn.disabled = false;
+                    loadBtn.innerHTML = '<i class="fas fa-download"></i> Load Model';
+                }
+            }
+
+            if (currentModelName) {
+                document.getElementById('current-model-name').textContent = currentModelName;
+            }
         }
 
         async function updateModelStatus() {
@@ -2336,6 +2385,22 @@ HTML_TEMPLATE = """
             const current = data.models.find(m => m.current);
             if (current) {
                 document.getElementById('current-model-name').textContent = current.name;
+            }
+            return current;
+        }
+
+        async function hydrateModelStatus() {
+            try {
+                const [statusRes, modelsRes] = await Promise.all([
+                    fetch('/api/model_status'),
+                    fetch('/api/models/list')
+                ]);
+                const statusData = await statusRes.json();
+                const modelsData = await modelsRes.json();
+                const current = modelsData.models.find(m => m.current);
+                applyModelStatus(statusData, current ? current.name : null);
+            } catch (err) {
+                console.error('Failed to hydrate model status', err);
             }
         }
 
@@ -2783,6 +2848,7 @@ HTML_TEMPLATE = """
                 camera.lookAt(center);
                 if (controls) controls.update(0);
 
+                hydrateModelStatus();
                 if (viewerConfig.generateMesh) {
                     buildMeshFromActiveCloud();
                 }
@@ -3209,6 +3275,7 @@ HTML_TEMPLATE = """
 
             // Update model status
             updateModelStatus();
+            hydrateModelStatus();
             console.log('UI initialization complete');
         });
     </script>
