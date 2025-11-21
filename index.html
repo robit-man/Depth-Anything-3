@@ -2795,10 +2795,35 @@
         async function exportGLB() {
             try {
                 document.getElementById('model-status-text').textContent = 'Exporting...';
-                window.open('/api/export/glb', '_blank');
-                setTimeout(() => {
-                    document.getElementById('model-status-text').textContent = 'Model: Ready';
-                }, 2000);
+                const glbUrl = `${API_BASE || ''}/api/export/glb`;
+
+                const response = await fetch(glbUrl);
+                if (!response.ok) {
+                    throw new Error(`Export failed with status ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                // Try to honor filename from Content-Disposition; fall back to a default
+                const disposition = response.headers.get('Content-Disposition') || '';
+                let filename = 'point_cloud.glb';
+                const utfMatch = disposition.match(/filename\\*=UTF-8''([^;]+)/);
+                const plainMatch = disposition.match(/filename=\"?([^\";]+)\"?/);
+                if (utfMatch) {
+                    filename = decodeURIComponent(utfMatch[1]);
+                } else if (plainMatch) {
+                    filename = plainMatch[1];
+                }
+
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(downloadUrl);
+
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
             } catch (error) {
                 console.error('Export error:', error);
                 alert('Failed to export. Check console for details.');
