@@ -919,7 +919,9 @@ def setup_signal_handlers():
         print("\n🛑 Received termination signal, shutting down gracefully...")
         raise SystemExit(0)
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None), getattr(signal, "SIGTSTP", None)):
+        if sig is None:
+            continue
         try:
             signal.signal(sig, _graceful_exit)
         except Exception:
