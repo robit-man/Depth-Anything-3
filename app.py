@@ -138,6 +138,25 @@ def bootstrap_environment():
         if result.returncode != 0 and missing:
             _mark_reinstall(f"\n⚠️ Detected missing packages in venv: {', '.join(missing)}\n   Reinstalling requirements to pick up new dependencies...")
 
+    # Enforce numpy < 2 (depth-anything-3 requires it)
+    if not reinstall_needed:
+        numpy_check = (
+            "import sys\n"
+            "try:\n"
+            " import numpy as np\n"
+            " major = int(np.__version__.split('.')[0])\n"
+            " sys.exit(0 if major < 2 else 1)\n"
+            "except Exception as e:\n"
+            " sys.exit(2)\n"
+        )
+        np_res = subprocess.run(
+            [str(venv_python), "-c", numpy_check],
+            capture_output=True,
+            text=True,
+        )
+        if np_res.returncode != 0:
+            _mark_reinstall("\n⚠️ Detected incompatible numpy (>=2). Will reinstall with numpy<2.")
+
     # On Jetson, ensure the installed torch actually reports CUDA available; if not, force reinstall
     if not reinstall_needed and is_jetson:
         torch_check = (
@@ -177,6 +196,10 @@ def bootstrap_environment():
             # Always upgrade packaging tools; helps resolve correct wheels on Jetson
             subprocess.run([str(venv_pip), "install", "--upgrade", "setuptools", "wheel"], check=True)
 
+            # Remove xformers on Jetson (no aarch64 wheels and may conflict with torch version)
+            if is_jetson:
+                subprocess.run([str(venv_pip), "uninstall", "-y", "xformers"], check=False)
+
             # Install torch first (required by xformers and other deps)
             print("\n📦 Installing PyTorch (this is a large package)...")
             if is_jetson:
@@ -207,6 +230,9 @@ def bootstrap_environment():
                     raise SystemExit(1)
             else:
                 subprocess.run([str(venv_pip), "install", "torch>=2", "torchvision"], check=True)
+
+            # Ensure numpy is pinned < 2 after torch install
+            subprocess.run([str(venv_pip), "install", "--upgrade", "numpy<2"], check=True)
 
             # Read requirements and filter out xformers (we'll install it separately)
             print("\n📦 Installing core dependencies...")
