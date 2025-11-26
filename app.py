@@ -138,6 +138,10 @@ def bootstrap_environment():
         if result.returncode != 0 and missing:
             _mark_reinstall(f"\n⚠️ Detected missing packages in venv: {', '.join(missing)}\n   Reinstalling requirements to pick up new dependencies...")
 
+    # On Jetson, strip incompatible xformers even if we don't reinstall (aarch64 wheels unavailable)
+    if is_jetson:
+        subprocess.run([str(venv_dir / ("Scripts" if sys.platform == "win32" else "bin") / "pip"), "uninstall", "-y", "xformers"], check=False)
+
     # Enforce numpy < 2 (depth-anything-3 requires it)
     if not reinstall_needed:
         numpy_check = (
@@ -208,12 +212,15 @@ def bootstrap_environment():
                     print(f"   Using Jetson wheel index: {jp_index}")
                     print(f"   Installing torch=={torch_ver}, torchvision=={vision_ver}")
                     try:
+                        # Force Jetson repo as primary index so we don't pull CPU wheels from PyPI
                         subprocess.run(
                             [
                                 str(venv_pip),
                                 "install",
-                                "--extra-index-url",
+                                "--index-url",
                                 jp_index,
+                                "--extra-index-url",
+                                "https://pypi.org/simple",
                                 f"torch=={torch_ver}",
                                 f"torchvision=={vision_ver}",
                             ],
@@ -233,6 +240,24 @@ def bootstrap_environment():
 
             # Ensure numpy is pinned < 2 after torch install
             subprocess.run([str(venv_pip), "install", "--upgrade", "numpy<2"], check=True)
+
+            # Verify CUDA availability on Jetson immediately after torch install
+            if is_jetson:
+                cuda_probe = (
+                    "import torch, sys; "
+                    "ok = torch.cuda.is_available(); "
+                    "print('CUDA_AVAILABLE', ok); "
+                    "sys.exit(0 if ok else 1)"
+                )
+                probe_res = subprocess.run(
+                    [str(venv_python), "-c", cuda_probe],
+                    capture_output=True,
+                    text=True,
+                )
+                if probe_res.returncode != 0:
+                    print("❌ CUDA not available after installing Jetson torch. Check JetPack drivers and wheel index.")
+                    print(f"   Probe output: {probe_res.stdout.strip() or probe_res.stderr.strip()}")
+                    raise SystemExit(1)
 
             # Read requirements and filter out xformers (we'll install it separately)
             print("\n📦 Installing core dependencies...")
@@ -315,6 +340,12 @@ import numpy as np
 import torch
 from PIL import Image
 import trimesh
+
+# Provide a safe shim for older torch versions that lack flash attention detection (e.g., Jetson wheels)
+if not hasattr(torch.backends.cuda, "is_flash_attention_available"):
+    def _no_flash_attention_available():
+        return False
+    torch.backends.cuda.is_flash_attention_available = _no_flash_attention_available
 
 # Enable TF32 where available (Ampere+ → tensor cores) to maximize throughput
 if torch.cuda.is_available():
