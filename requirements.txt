@@ -7,8 +7,7 @@ einops
 huggingface_hub
 imageio
 numpy<2
-opencv-python
-xformers
+opencv-python==4.10.0.84
 open3d
 fastapi
 unicorn

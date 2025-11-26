@@ -21,8 +21,7 @@ dependencies = [
     "huggingface_hub",
     "imageio",
     "numpy<2",
-    "opencv-python",
-    "xformers",
+    "opencv-python==4.10.0.84",
     "open3d",
     "fastapi",
     "unicorn",
@@ -44,6 +43,7 @@ dependencies = [
 [project.optional-dependencies]
 app = ["gradio>=5", "pillow>=9.0"] # requires that python3>=3.10
 gs = ["gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70"]
+xformers = ["xformers"]
 all = ["depth-anything-3[app,gs]"]
 
 

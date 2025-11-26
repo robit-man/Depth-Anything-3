@@ -26,6 +26,23 @@ def _is_jetson():
     except Exception:
         return False
 
+def _jetson_cuda_env():
+    """
+    Compose an environment with common Jetson CUDA library paths so torch can find drivers.
+    """
+    env = os.environ.copy()
+    cuda_paths = [
+        "/usr/local/cuda/lib64",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu/tegra",
+    ]
+    ld_path = env.get("LD_LIBRARY_PATH", "")
+    for p in cuda_paths:
+        if p not in ld_path:
+            ld_path = f"{ld_path}:{p}" if ld_path else p
+    env["LD_LIBRARY_PATH"] = ld_path
+    return env
+
 def _jetson_release_info():
     try:
         return Path("/etc/nv_tegra_release").read_text()
@@ -140,7 +157,11 @@ def bootstrap_environment():
 
     # On Jetson, strip incompatible xformers even if we don't reinstall (aarch64 wheels unavailable)
     if is_jetson:
-        subprocess.run([str(venv_dir / ("Scripts" if sys.platform == "win32" else "bin") / "pip"), "uninstall", "-y", "xformers"], check=False)
+        subprocess.run(
+            [str(venv_dir / ("Scripts" if sys.platform == "win32" else "bin") / "pip"), "uninstall", "-y", "xformers"],
+            check=False,
+            env=_jetson_cuda_env(),
+        )
 
     # Enforce numpy < 2 (depth-anything-3 requires it)
     if not reinstall_needed:
@@ -157,6 +178,7 @@ def bootstrap_environment():
             [str(venv_python), "-c", numpy_check],
             capture_output=True,
             text=True,
+            env=_jetson_cuda_env() if is_jetson else None,
         )
         if np_res.returncode != 0:
             _mark_reinstall("\n⚠️ Detected incompatible numpy (>=2). Will reinstall with numpy<2.")
@@ -253,6 +275,7 @@ def bootstrap_environment():
                     [str(venv_python), "-c", cuda_probe],
                     capture_output=True,
                     text=True,
+                    env=_jetson_cuda_env(),
                 )
                 if probe_res.returncode != 0:
                     print("❌ CUDA not available after installing Jetson torch. Check JetPack drivers and wheel index.")
