@@ -101,6 +101,24 @@ def _install_jetson_cusparselt():
     print("⚠️  libcusparseLt.so.0 not found - required by PyTorch 2.4+")
     print("   Installing cuSPARSELt library...")
 
+    # Find CUDA version from nvcc
+    cuda_version = None
+    try:
+        nvcc_output = subprocess.run(
+            ["nvcc", "--version"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        # Parse version from output like "release 12.2, V12.2.140"
+        import re
+        match = re.search(r"release (\d+\.\d+)", nvcc_output.stdout)
+        if match:
+            cuda_version = match.group(1)
+            print(f"   Detected CUDA version: {cuda_version}")
+    except Exception as e:
+        print(f"   Could not detect CUDA version: {e}")
+
     # Find CUDA home
     cuda_home = None
     for candidate in ["/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-12.2", "/usr/local/cuda-12.4", "/usr/local/cuda-12.6"]:
@@ -117,23 +135,50 @@ def _install_jetson_cusparselt():
         import tarfile
         import urllib.request
 
-        # cuSPARSELt version compatible with CUDA 12.2/12.4 (JetPack 6.0+)
-        CUSPARSELT_VERSION = "0.7.1.0"
-        CUSPARSELT_URL = f"https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-aarch64/libcusparse_lt-linux-aarch64-{CUSPARSELT_VERSION}-archive.tar.xz"
+        # Determine cuSPARSELt version based on CUDA version
+        # Following PyTorch's official installation script:
+        # https://github.com/pytorch/pytorch/blob/main/.ci/docker/common/install_cusparselt.sh
+        if cuda_version and cuda_version.startswith("12."):
+            # CUDA 12.1-12.6 -> cuSPARSELt 0.5.2.1 (PyTorch's recommended version)
+            CUSPARSELT_VERSION = "0.5.2.1"
+            arch = "sbsa"  # ARM architecture (Jetson uses ARM/aarch64)
+        elif cuda_version and cuda_version.startswith("11.8"):
+            # CUDA 11.8 -> cuSPARSELt 0.4.0.7
+            CUSPARSELT_VERSION = "0.4.0.7"
+            arch = "x86_64"
+        else:
+            # Default to version compatible with CUDA 12.x
+            print(f"   Unknown CUDA version {cuda_version}, using default cuSPARSELt 0.5.2.1")
+            CUSPARSELT_VERSION = "0.5.2.1"
+            arch = "sbsa"
+
+        CUSPARSELT_NAME = f"libcusparse_lt-linux-{arch}-{CUSPARSELT_VERSION}-archive"
+        CUSPARSELT_URL = f"https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-{arch}/{CUSPARSELT_NAME}.tar.xz"
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            archive_path = tmpdir / "cusparselt.tar.xz"
+            archive_path = tmpdir / f"{CUSPARSELT_NAME}.tar.xz"
 
-            print(f"   Downloading cuSPARSELt {CUSPARSELT_VERSION}...")
-            urllib.request.urlretrieve(CUSPARSELT_URL, archive_path)
+            print(f"   Downloading cuSPARSELt {CUSPARSELT_VERSION} for {arch}...")
+            print(f"   URL: {CUSPARSELT_URL}")
+
+            # Retry logic like PyTorch's script
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    urllib.request.urlretrieve(CUSPARSELT_URL, archive_path)
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    print(f"   Download attempt {attempt + 1} failed, retrying...")
 
             print("   Extracting archive...")
             with tarfile.open(archive_path, 'r:xz') as tar:
                 tar.extractall(tmpdir)
 
             # Find the extracted directory
-            extracted_dir = tmpdir / f"libcusparse_lt-linux-aarch64-{CUSPARSELT_VERSION}-archive"
+            extracted_dir = tmpdir / CUSPARSELT_NAME
 
             if not extracted_dir.exists():
                 print(f"❌ Expected directory not found: {extracted_dir}")
@@ -142,17 +187,17 @@ def _install_jetson_cusparselt():
             # Copy libraries and headers
             print(f"   Installing to {cuda_home}...")
 
-            # Copy include files
+            # Copy include files (use -a to preserve symlinks like PyTorch's script)
             include_src = extracted_dir / "include"
             include_dst = Path(cuda_home) / "include"
             if include_src.exists():
-                subprocess.run(["sudo", "cp", "-r", str(include_src) + "/.", str(include_dst)], check=True)
+                subprocess.run(["sudo", "cp", "-a", str(include_src) + "/.", str(include_dst)], check=True)
 
-            # Copy library files
+            # Copy library files (use -a to preserve symlinks like PyTorch's script)
             lib_src = extracted_dir / "lib"
             lib_dst = Path(cuda_home) / "lib64"
             if lib_src.exists():
-                subprocess.run(["sudo", "cp", "-r", str(lib_src) + "/.", str(lib_dst)], check=True)
+                subprocess.run(["sudo", "cp", "-a", str(lib_src) + "/.", str(lib_dst)], check=True)
 
             # Update linker cache
             print("   Updating linker cache...")
@@ -165,13 +210,17 @@ def _install_jetson_cusparselt():
         print(f"❌ Failed to install cuSPARSELt: {e}")
         print("\n   MANUAL INSTALLATION:")
         print("   You can install cuSPARSELt manually using one of these methods:")
-        print("\n   Method 1 - Debian package (recommended):")
+        print("\n   Method 1 - PyTorch's official script (recommended):")
+        print("   wget https://raw.githubusercontent.com/pytorch/pytorch/main/.ci/docker/common/install_cusparselt.sh")
+        print("   export CUDA_VERSION=12.2  # or your CUDA version")
+        print("   sudo bash ./install_cusparselt.sh")
+        print("\n   Method 2 - Debian package:")
         print("   wget https://developer.download.nvidia.com/compute/cusparselt/0.7.1/local_installers/cusparselt-local-tegra-repo-ubuntu2204-0.7.1_1.0-1_arm64.deb")
         print("   sudo dpkg -i cusparselt-local-tegra-repo-ubuntu2204-0.7.1_1.0-1_arm64.deb")
         print("   sudo cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.7.1/cusparselt-*-keyring.gpg /usr/share/keyrings/")
         print("   sudo apt-get update")
         print("   sudo apt-get -y install libcusparselt0 libcusparselt-dev")
-        print("\n   Method 2 - Download from:")
+        print("\n   Method 3 - Download from:")
         print("   https://developer.nvidia.com/cusparselt-downloads")
         return False
 
@@ -541,11 +590,26 @@ def bootstrap_environment():
                 print(f"   ⚠️  This may take 15-30 minutes on Jetson. Please be patient...")
 
                 try:
+                    # Install build dependencies for torchvision
+                    print("   Installing build dependencies...")
+                    subprocess.run(
+                        [
+                            "sudo", "apt-get", "install", "-y",
+                            "libjpeg-dev", "zlib1g-dev", "libpython3-dev",
+                            "libopenblas-dev", "libavcodec-dev", "libavformat-dev", "libswscale-dev"
+                        ],
+                        check=False,  # Don't fail if already installed
+                        capture_output=True
+                    )
+
                     # Install torchvision from GitHub source at the correct tag
+                    # Force reinstall to ensure CUDA operators are compiled correctly
                     subprocess.run(
                         [
                             str(venv_pip),
                             "install",
+                            "--no-cache-dir",  # Force rebuild
+                            "--force-reinstall",  # Force reinstall
                             f"git+https://github.com/pytorch/vision.git@{vision_tag}",
                         ],
                         check=True,
@@ -569,6 +633,54 @@ def bootstrap_environment():
                 except subprocess.TimeoutExpired:
                     print("⚠️  Torchvision build timed out after 1 hour")
                     print("   You may need to build it manually with more resources")
+
+                # Verify torchvision imports correctly (check for NMS operator)
+                print("   Verifying torchvision installation...")
+                vision_probe = (
+                    "import sys; "
+                    "try:\\n"
+                    "  import torchvision\\n"
+                    "  print('TORCHVISION_OK', torchvision.__version__)\\n"
+                    "  sys.exit(0)\\n"
+                    "except RuntimeError as e:\\n"
+                    "  if 'nms' in str(e):\\n"
+                    "    print('TORCHVISION_NMS_ERROR', str(e))\\n"
+                    "    sys.exit(1)\\n"
+                    "  raise\\n"
+                )
+                vision_res = subprocess.run(
+                    [str(venv_python), "-c", vision_probe],
+                    capture_output=True,
+                    text=True,
+                    env=_jetson_cuda_env(),
+                )
+                if vision_res.returncode != 0 and "TORCHVISION_NMS_ERROR" in vision_res.stdout:
+                    print("⚠️  Torchvision NMS operator error detected")
+                    print("   This means torchvision was built before PyTorch could fully load")
+                    print("   Rebuilding torchvision with --force-reinstall...")
+
+                    # Force rebuild torchvision
+                    try:
+                        subprocess.run([str(venv_pip), "uninstall", "-y", "torchvision"], check=True, capture_output=True)
+                        subprocess.run(
+                            [
+                                str(venv_pip),
+                                "install",
+                                "--no-cache-dir",
+                                f"git+https://github.com/pytorch/vision.git@{vision_tag}",
+                            ],
+                            check=True,
+                            env=_jetson_cuda_env(),
+                            timeout=3600,
+                        )
+                        print("✓ Torchvision rebuilt successfully")
+                    except Exception as e:
+                        print(f"❌ Failed to rebuild torchvision: {e}")
+                        print("   You may need to rebuild manually:")
+                        print(f"   pip uninstall -y torchvision")
+                        print(f"   pip install --no-cache-dir git+https://github.com/pytorch/vision.git@{vision_tag}")
+                else:
+                    print(f"✓ Torchvision verification passed: {vision_res.stdout.strip()}")
 
             # Verify CUDA availability on Jetson immediately after torch install
             if is_jetson:
