@@ -1401,7 +1401,20 @@ def process_file():
                     if conf_flat is not None:
                         conf_flat = conf_flat[valid]
 
-                    points_list.append(points)
+                    # Transform points from camera frame to world frame using extrinsics (assumed world->camera)
+                    cam_pose = camera_poses[i] if i < len(camera_poses) else np.eye(4, dtype=np.float32)
+                    try:
+                        cam_pose = np.array(cam_pose, dtype=np.float32)
+                        if cam_pose.shape == (4, 4):
+                            c2w = np.linalg.inv(cam_pose)  # invert to get camera->world
+                            homog = np.concatenate([points, np.ones((points.shape[0], 1), dtype=np.float32)], axis=1)
+                            points_world = (c2w @ homog.T).T[:, :3]
+                        else:
+                            points_world = points
+                    except Exception:
+                        points_world = points
+
+                    points_list.append(points_world)
                     colors_list.append(colors)
                     if conf_flat is not None:
                         conf_list.append(conf_flat)
@@ -1409,7 +1422,7 @@ def process_file():
                     # Store per-frame data for video sequences
                     if is_video:
                         # Downsample points for individual frames if needed
-                        frame_points = points
+                        frame_points = points_world
                         frame_colors = colors
                         frame_conf = conf_flat
 
