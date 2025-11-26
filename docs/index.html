@@ -3005,7 +3005,7 @@
                 this.currentCameraHelper = null;     // Helper showing current camera pose
                 this.combinedPointCloudMesh = null;  // Merged point cloud from inference
                 this.combinedPointCloudData = null;
-                this.poseIsW2C = null;               // Heuristic: are incoming poses world->camera?
+                this.pathPosesInverted = false;      // Whether we inverted path poses (w2c -> c2w)
             }
 
             setCombinedPointCloud(mesh, data) {
@@ -3084,8 +3084,11 @@
                     return;
                 }
 
-                // Normalize pose to camera-to-world
-                const framePose = this.normalizePoseToC2W(frame.camera_pose);
+                // Cache pose as camera-to-world (backend already provides c2w)
+                let framePose = this.poseToMatrix(frame.camera_pose);
+                if (framePose && this.pathPosesInverted) {
+                    framePose = framePose.clone().invert();
+                }
                 frame._c2w_matrix = framePose;
                 frame._c2w = framePose ? framePose.toArray() : frame.camera_pose;
 
@@ -3133,17 +3136,11 @@
                 }
             }
 
-            normalizePoseToC2W(pose) {
+            poseToMatrix(pose) {
                 if (!pose) return null;
                 const m = new THREE.Matrix4();
                 const flat = pose.flat ? pose.flat() : [].concat(...pose);
                 m.fromArray(flat);
-
-                // If we already determined path poses were w2c, treat frame pose the same
-                const treatAsW2C = this.poseIsW2C === true;
-                if (treatAsW2C) {
-                    m.invert();
-                }
                 return m;
             }
 
@@ -3156,40 +3153,18 @@
                     const res = await fetch('/api/video/camera_path');
                     const raw = await res.json();
 
-                    // Convert poses to Matrix4
-                    const poseMats = (raw.poses || []).map((p) => {
-                        const m = new THREE.Matrix4();
-                        const flat = p.flat ? p.flat() : [].concat(...p);
-                        m.fromArray(flat);
-                        return m;
-                    });
+                    // Convert poses to Matrix4 (assumed camera-to-world from backend)
+                    const poseMats = (raw.poses || raw.c2w_poses || []).map((p) => this.poseToMatrix(p)).filter(Boolean);
 
-                    // Use provided positions to detect if poses are actually world->camera (collapsed path => likely w2c)
+                    // Use provided positions if available; otherwise derive from poses
                     let positions = (raw.positions || []).map(pos => new THREE.Vector3(...pos));
-                    let collapsed = false;
-                    if (positions.length > 1) {
-                        const box = new THREE.Box3().setFromPoints(positions);
-                        const diag = box.getSize(new THREE.Vector3()).length();
-                        collapsed = !Number.isFinite(diag) || diag < 1e-3;
+                    if (!positions.length && poseMats.length) {
+                        positions = poseMats.map((m) => {
+                            const v = new THREE.Vector3();
+                            v.setFromMatrixPosition(m);
+                            return v;
+                        });
                     }
-
-                    // If collapsed, treat incoming poses as w2c and invert to c2w; recompute positions
-                    const c2wPoses = poseMats.map((m) => {
-                        const mat = m.clone();
-                        if (collapsed) {
-                            mat.invert();
-                        }
-                        return mat;
-                    });
-
-                    positions = c2wPoses.map((m) => {
-                        const v = new THREE.Vector3();
-                        v.setFromMatrixPosition(m);
-                        return v;
-                    });
-
-                    // Cache heuristic for frame-level use
-                    this.poseIsW2C = collapsed;
 
                     // Build spline for smooth playback/attachments
                     if (positions.length >= 2) {
@@ -3201,7 +3176,7 @@
                     this.cameraPathData = {
                         ...raw,
                         positions: positions.map(p => [p.x, p.y, p.z]),
-                        c2w_poses: c2wPoses.map(m => m.toArray())
+                        c2w_poses: poseMats.map(m => m.toArray())
                     };
                     return this.cameraPathData;
                 } catch (err) {
@@ -3350,12 +3325,7 @@
                     this.cameraPathLine = new THREE.Line(pathGeometry, pathMaterial);
                     scene.add(this.cameraPathLine);
 
-                    const poses = (data.c2w_poses || data.poses || []).map((p) => {
-                        const m = new THREE.Matrix4();
-                        const flat = p.flat ? p.flat() : [].concat(...p);
-                        m.fromArray(flat);
-                        return m;
-                    });
+                    const poses = (data.c2w_poses || data.poses || []).map((p) => this.poseToMatrix(p)).filter(Boolean);
 
                     // Add camera frustums
                     poses.forEach((pose, index) => {
@@ -3502,7 +3472,7 @@
 
             updateCameraHelper(frame) {
                 if (!frame) return;
-                const c2wMat = frame._c2w_matrix || this.normalizePoseToC2W(frame.camera_pose);
+                const c2wMat = frame._c2w_matrix || this.poseToMatrix(frame.camera_pose);
                 const poseForHelper = c2wMat ? c2wMat.toArray() : (frame._c2w || frame.camera_pose);
                 if (!poseForHelper) return;
                 const helper = this.createCameraFrustum(
