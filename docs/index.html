@@ -683,7 +683,7 @@
     <!-- Bottom button bar -->
     <div class="bottom-bar">
         <!-- Video Controls (hidden by default) -->
-        <div id="video-controls" style="display: none; flex: 1; max-width: 600px; margin-right: 20px;">
+        <div id="video-controls" style="display: none; flex: 1; max-width: 820px; margin-right: 20px;">
             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
                 <button onclick="videoPlayer.play()" id="video-play-btn" style="flex: 0; min-width: 40px; padding: 8px;">
                     <i class="fas fa-play"></i>
@@ -700,8 +700,14 @@
                 <button onclick="videoPlayer.toggleCameraPath()" id="video-camera-path-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Show Camera Path">
                     <i class="fas fa-route"></i>
                 </button>
-                <button onclick="videoPlayer.toggleFollowCamera()" id="video-follow-cam-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Follow Camera">
-                    <i class="fas fa-video"></i>
+                <button onclick="videoPlayer.toggleAttachToPath()" id="video-follow-cam-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Attach viewer to camera spline">
+                    <i class="fas fa-magnet"></i>
+                </button>
+                <button onclick="videoPlayer.toggleFrameOnly()" id="video-frame-only-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Show only the current frame's point cloud">
+                    <i class="fas fa-filter"></i>
+                </button>
+                <button onclick="videoPlayer.playWalkthrough()" id="video-walkthrough-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Playback along camera path">
+                    <i class="fas fa-person-walking"></i>
                 </button>
                 <span id="frame-counter" style="color: rgba(255,255,255,0.7); font-size: 12px; white-space: nowrap;">0 / 0</span>
             </div>
@@ -2504,6 +2510,11 @@
                 pointCloud = new THREE.Points(geometry, material);
                 scene.add(pointCloud);
 
+                // Remember the merged cloud so we can toggle per-frame-only view during video playback
+                if (processed.metadata?.is_video && typeof videoPlayer !== 'undefined') {
+                    videoPlayer.setCombinedPointCloud(pointCloud, processed);
+                }
+
                 // Update stats
                 const numPoints = processed.metadata?.num_points || processed.vertices.length;
                 document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
@@ -2977,16 +2988,47 @@
                 this.videoInfo = null;
                 this.isPlaying = false;
                 this.isLooping = true;
-                this.pointCloudMesh = null;
+                this.pointCloudMesh = null;          // Per-frame cloud
                 this.playbackTimer = null;
                 this.frameBuffer = new Map();
                 this.bufferSize = 5;
                 this.cameraPathLine = null;
                 this.cameraFrustums = [];
                 this.showCameraPath = false;
-                this.followCamera = false;  // NEW: Follow the video camera
-                this.cameraData = null;      // NEW: Store camera poses and intrinsics
-                this.previousCameraState = null;  // NEW: Store user's camera state before following
+                this.followCamera = false;          // Attach viewer camera to the captured path
+                this.cameraData = null;
+                this.previousCameraState = null;
+                this.showFrameOnly = false;          // Hide merged cloud, show current frame only
+                this.cameraPathData = null;          // Cached /api/video/camera_path payload
+                this.cameraSpline = null;            // Spline for smooth playback
+                this.currentCameraHelper = null;     // Helper showing current camera pose
+                this.combinedPointCloudMesh = null;  // Merged point cloud from inference
+                this.combinedPointCloudData = null;
+            }
+
+            setCombinedPointCloud(mesh, data) {
+                this.combinedPointCloudMesh = mesh;
+                this.combinedPointCloudData = data;
+                this.syncCloudVisibility();
+            }
+
+            setToggleState(id, active) {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                btn.style.background = active
+                    ? 'rgba(16, 185, 129, 0.4)'
+                    : 'rgba(16, 185, 129, 0.2)';
+            }
+
+            syncCloudVisibility() {
+                if (this.combinedPointCloudMesh) {
+                    this.combinedPointCloudMesh.visible = !this.showFrameOnly;
+                }
+                if (this.pointCloudMesh) {
+                    this.pointCloudMesh.visible = true; // always show the per-frame overlay
+                }
+
+                this.setToggleState('video-frame-only-btn', this.showFrameOnly);
             }
 
             async loadVideo() {
@@ -2999,6 +3041,17 @@
 
                     this.videoInfo = await res.json();
                     console.log('Video loaded:', this.videoInfo);
+
+                    // Preload camera path data for helpers and playback
+                    await this.ensureCameraPathData();
+
+                    // Reset toggle states for a fresh session
+                    this.showFrameOnly = false;
+                    this.setToggleState('video-loop-btn', this.isLooping);
+                    this.setToggleState('video-camera-path-btn', this.showCameraPath);
+                    this.setToggleState('video-follow-cam-btn', this.followCamera);
+                    this.setToggleState('video-frame-only-btn', this.showFrameOnly);
+                    this.syncCloudVisibility();
 
                     // Update UI
                     document.getElementById('video-controls').style.display = 'flex';
@@ -3032,6 +3085,8 @@
                 this.currentFrame = frameIndex;
                 this.updatePointCloud(frame.vertices, frame.colors);
                 this.updateFrameCounter();
+                this.updateCameraHelper(frame);
+                this.syncCloudVisibility();
 
                 // Update slider
                 const slider = document.getElementById('frame-slider');
@@ -3071,6 +3126,31 @@
                 }
             }
 
+            async ensureCameraPathData() {
+                if (this.cameraPathData) {
+                    return this.cameraPathData;
+                }
+
+                try {
+                    const res = await fetch('/api/video/camera_path');
+                    this.cameraPathData = await res.json();
+
+                    // Build spline for smooth playback/attachments
+                    const pathPoints = (this.cameraPathData.positions || []).map(
+                        pos => new THREE.Vector3(...pos)
+                    );
+                    if (pathPoints.length >= 2) {
+                        this.cameraSpline = new THREE.CatmullRomCurve3(pathPoints);
+                        this.cameraSpline.curveType = 'catmullrom';
+                    }
+
+                    return this.cameraPathData;
+                } catch (err) {
+                    console.error('Failed to load camera path data:', err);
+                    return null;
+                }
+            }
+
             updatePointCloud(vertices, colors) {
                 if (!scene) return;
 
@@ -3096,12 +3176,10 @@
                 });
 
                 this.pointCloudMesh = new THREE.Points(geometry, material);
+                this.pointCloudMesh.renderOrder = 1;
                 scene.add(this.pointCloudMesh);
 
-                // Store in global state
-                if (typeof activePointCloud !== 'undefined') {
-                    activePointCloud = this.pointCloudMesh;
-                }
+                this.syncCloudVisibility();
             }
 
             updateFrameCounter() {
@@ -3178,15 +3256,14 @@
                 console.log('Loop:', this.isLooping ? 'ON' : 'OFF');
             }
 
-            async toggleCameraPath() {
-                this.showCameraPath = !this.showCameraPath;
-
-                const btn = document.getElementById('video-camera-path-btn');
-                if (btn) {
-                    btn.style.background = this.showCameraPath
-                        ? 'rgba(16, 185, 129, 0.4)'
-                        : 'rgba(16, 185, 129, 0.2)';
+            async toggleCameraPath(forceState = null) {
+                if (typeof forceState === 'boolean') {
+                    this.showCameraPath = forceState;
+                } else {
+                    this.showCameraPath = !this.showCameraPath;
                 }
+
+                this.setToggleState('video-camera-path-btn', this.showCameraPath);
 
                 if (this.showCameraPath) {
                     await this.loadAndDisplayCameraPath();
@@ -3197,13 +3274,13 @@
 
             async loadAndDisplayCameraPath() {
                 try {
-                    const res = await fetch('/api/video/camera_path');
-                    const data = await res.json();
+                    const data = await this.ensureCameraPathData();
+                    if (!data) return;
 
                     this.clearCameraPath();
 
                     // Draw camera path line
-                    const pathPoints = data.positions.map(pos => new THREE.Vector3(...pos));
+                    const pathPoints = (data.positions || []).map(pos => new THREE.Vector3(...pos));
                     const pathGeometry = new THREE.BufferGeometry().setFromPoints(pathPoints);
                     const pathMaterial = new THREE.LineBasicMaterial({
                         color: 0xff0000,
@@ -3215,7 +3292,7 @@
                     scene.add(this.cameraPathLine);
 
                     // Add camera frustums
-                    data.poses.forEach((pose, index) => {
+                    (data.poses || []).forEach((pose, index) => {
                         const frustum = this.createCameraFrustum(pose, index);
                         this.cameraFrustums.push(frustum);
                         scene.add(frustum);
@@ -3227,9 +3304,9 @@
                 }
             }
 
-            createCameraFrustum(poseMatrix, index) {
+            createCameraFrustum(poseMatrix, index, options = {}) {
                 // Get intrinsics for this frame if available
-                const frame = this.frameBuffer.get(index);
+                const frame = options.frameData || this.frameBuffer.get(index);
                 let fov = 60; // default FOV in degrees
                 let aspect = 16 / 9; // default aspect ratio
 
@@ -3277,13 +3354,14 @@
                 ];
 
                 const frustumLines = new THREE.Group();
+                const lineColor = options.color || 0x00ff00;
                 edges.forEach(([start, end]) => {
                     const lineGeometry = new THREE.BufferGeometry().setFromPoints([
                         vertices[start],
                         vertices[end]
                     ]);
                     const lineMaterial = new THREE.LineBasicMaterial({
-                        color: 0x00ff00,
+                        color: lineColor,
                         opacity: 0.6,
                         transparent: true
                     });
@@ -3302,6 +3380,7 @@
 
                 frustumLines.userData.frameIndex = index;
                 frustumLines.userData.isFrustum = true;
+                frustumLines.matrixAutoUpdate = false;
 
                 return frustumLines;
             }
@@ -3315,24 +3394,52 @@
                 }
 
                 this.cameraFrustums.forEach(frustum => {
-                    scene.remove(frustum);
-                    if (frustum.geometry) frustum.geometry.dispose();
-                    if (frustum.material) frustum.material.dispose();
+                    this.disposeFrustum(frustum);
                 });
                 this.cameraFrustums = [];
             }
 
+            disposeFrustum(obj) {
+                if (!obj) return;
+                scene.remove(obj);
+                obj.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => m.dispose && m.dispose());
+                        } else if (child.material.dispose) {
+                            child.material.dispose();
+                        }
+                    }
+                });
+            }
+
+            updateCameraHelper(frame) {
+                if (!frame || !frame.camera_pose) return;
+                const helper = this.createCameraFrustum(
+                    frame.camera_pose,
+                    frame.frame_index ?? this.currentFrame,
+                    { color: 0xffff00, frameData: frame }
+                );
+
+                if (this.currentCameraHelper) {
+                    this.disposeFrustum(this.currentCameraHelper);
+                }
+                this.currentCameraHelper = helper;
+                scene.add(helper);
+            }
+
             // ========== NEW CAMERA FOLLOWING FEATURES ==========
 
-            toggleFollowCamera() {
-                this.followCamera = !this.followCamera;
+            toggleFrameOnly() {
+                this.showFrameOnly = !this.showFrameOnly;
+                this.syncCloudVisibility();
+                console.log('Frame-only view:', this.showFrameOnly ? 'ON' : 'OFF');
+            }
 
-                const btn = document.getElementById('video-follow-cam-btn');
-                if (btn) {
-                    btn.style.background = this.followCamera
-                        ? 'rgba(16, 185, 129, 0.4)'
-                        : 'rgba(16, 185, 129, 0.2)';
-                }
+            toggleAttachToPath() {
+                this.followCamera = !this.followCamera;
+                this.setToggleState('video-follow-cam-btn', this.followCamera);
 
                 if (this.followCamera) {
                     // Save current camera state
@@ -3341,7 +3448,7 @@
                         rotation: camera.rotation.clone()
                     };
 
-                    // Disable orbit controls when following
+                    // Disable orbit/fly controls when following
                     if (typeof orbitControls !== 'undefined' && orbitControls) {
                         orbitControls.enabled = false;
                     }
@@ -3349,13 +3456,16 @@
                         flyControls.enabled = false;
                     }
 
+                    // Ensure camera path and helpers are visible
+                    this.toggleCameraPath(true);
+
                     // Apply current frame's camera
                     const frame = this.frameBuffer.get(this.currentFrame);
                     if (frame && frame.camera_pose && frame.intrinsics) {
                         this.updateViewerCamera(frame.camera_pose, frame.intrinsics);
                     }
 
-                    console.log('Camera follow: ON');
+                    console.log('Camera attached to path');
                 } else {
                     // Restore previous camera state
                     if (this.previousCameraState) {
@@ -3371,8 +3481,22 @@
                         flyControls.enabled = true;
                     }
 
-                    console.log('Camera follow: OFF');
+                    console.log('Camera detached from path');
                 }
+            }
+
+            // Backwards-compat alias
+            toggleFollowCamera() {
+                return this.toggleAttachToPath();
+            }
+
+            async playWalkthrough() {
+                if (!this.videoInfo) {
+                    const ok = await this.loadVideo();
+                    if (!ok) return;
+                }
+                await this.toggleCameraPath(true);
+                this.play();
             }
 
             updateViewerCamera(cameraPose, intrinsics) {
@@ -3445,6 +3569,27 @@
                 this.videoInfo = null;
                 this.showCameraPath = false;
                 this.cameraData = null;
+                this.cameraPathData = null;
+                this.cameraSpline = null;
+                this.showFrameOnly = false;
+
+                if (this.currentCameraHelper) {
+                    this.disposeFrustum(this.currentCameraHelper);
+                    this.currentCameraHelper = null;
+                }
+                if (this.combinedPointCloudMesh) {
+                    this.combinedPointCloudMesh.visible = true;
+                }
+                this.combinedPointCloudMesh = null;
+                this.combinedPointCloudData = null;
+                if (this.pointCloudMesh) {
+                    scene.remove(this.pointCloudMesh);
+                    if (this.pointCloudMesh.geometry) this.pointCloudMesh.geometry.dispose();
+                    if (this.pointCloudMesh.material && this.pointCloudMesh.material.dispose) {
+                        this.pointCloudMesh.material.dispose();
+                    }
+                    this.pointCloudMesh = null;
+                }
 
                 // Disable camera following and restore controls
                 if (this.followCamera) {
@@ -3456,6 +3601,10 @@
                         flyControls.enabled = true;
                     }
                 }
+
+                this.setToggleState('video-follow-cam-btn', false);
+                this.setToggleState('video-camera-path-btn', false);
+                this.setToggleState('video-frame-only-btn', false);
 
                 document.getElementById('video-controls').style.display = 'none';
             }
