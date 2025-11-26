@@ -993,11 +993,43 @@
         };
         let viewerConfig = {...defaultConfig};
 
+        // ============================================================================
+        // CAMERA POSE COORDINATE SYSTEM DOCUMENTATION
+        // ============================================================================
+        //
+        // **Backend Convention (Depth Anything 3):**
+        // - The model predicts EXTRINSICS: 4x4 world-to-camera transformation matrices
+        // - These are stored as numpy arrays (row-major memory layout)
+        // - When sent via JSON (.tolist()), they remain row-major: [row0, row1, row2, row3]
+        //
+        // **Backend API Response (/api/video/camera_path):**
+        // - "poses": Original extrinsics (world-to-camera, row-major)
+        // - "c2w_poses": Inverted extrinsics to camera-to-world (row-major)
+        // - "poses_col_major_flat": c2w matrices flattened in column-major order for Three.js
+        // - "positions": Camera positions extracted from c2w[:3, 3]
+        //
+        // **Three.js Convention:**
+        // - Matrix4.fromArray() expects COLUMN-MAJOR order: [col0, col1, col2, col3]
+        // - Camera coordinate system: +X right, +Y up, -Z forward (into scene)
+        // - Camera-to-world (c2w) matrix transforms from camera space to world space
+        //
+        // **Transformation Pipeline:**
+        // 1. Model predicts extrinsics (w2c) → Backend inverts to c2w
+        // 2. Backend transposes c2w for column-major → "poses_col_major_flat"
+        // 3. Frontend loads with Matrix4.fromArray() → Ready for Three.js
+        //
+        // **Point Cloud Transformation:**
+        // - Backend provides per-frame points in CAMERA SPACE (not world space)
+        // - To visualize all frames together, we must transform to world space
+        // - Transform: P_world = c2w * P_camera
+        //
+        // ============================================================================
+
         // Pose handling debug/normalization controls
         const POSE_DEBUG_CONFIG = {
             // Log the first raw pose returned by /api/video/... with no transforms applied
-            logFirstRawPose: true,
-            rawPoseFrameIndex: 0,       // Frame to sample for the raw pose log
+            logFirstRawPose: false,  // Changed to false - enable only for debugging
+            rawPoseFrameIndex: 0,    // Frame to sample for the raw pose log
             // Toggle for ongoing pose diagnostics (normalized pose + forward vectors)
             enabled: false,
             drawForwardRay: false,
@@ -2993,6 +3025,42 @@
         // VIDEO PLAYBACK AND CAMERA PATH
         // ============================================================================
 
+        /**
+         * VideoPlayer - Handles video sequence playback and camera path visualization
+         *
+         * **Camera Path Derivation from Depth Anything 3:**
+         *
+         * The camera path represents the 3D trajectory of the camera through space as it
+         * captures the video. In Depth Anything 3, camera poses are PREDICTED by a neural
+         * network (not computed via traditional SfM/SLAM).
+         *
+         * **How Camera Poses are Predicted:**
+         * 1. **Input**: Video frames → extracted at specified FPS
+         * 2. **Feature Extraction**: DinoV2 backbone extracts visual features from each frame
+         * 3. **Camera Encoder**: Processes features to create pose-aware tokens
+         * 4. **Camera Decoder**: Predicts 9D pose encoding for each frame:
+         *    - Translation (t): 3D camera position in world space
+         *    - Quaternion (qvec): 4D rotation representation
+         *    - Field of View (fov): 2D horizontal and vertical FOV angles
+         * 5. **Pose Conversion**: 9D encoding → 4×4 extrinsics matrix (world-to-camera)
+         * 6. **Backend Processing**: Extrinsics inverted to camera-to-world (c2w) for frontend
+         * 7. **Path Construction**: Camera positions extracted from c2w matrices
+         *
+         * **Coordinate System:**
+         * - Backend: Extrinsics (w2c) in row-major numpy format
+         * - API Response: c2w matrices in both row-major and column-major formats
+         * - Three.js: Column-major c2w matrices (preferred format)
+         * - Camera Space: +X right, +Y up, -Z forward (OpenGL/Three.js convention)
+         *
+         * **Key Features:**
+         * - Frame-by-frame point cloud playback
+         * - Smooth camera path spline interpolation
+         * - Camera frustum visualization at each frame
+         * - "Follow camera" mode to match the captured viewpoint
+         * - Point cloud transformation from camera space to world space
+         *
+         * @class VideoPlayer
+         */
         class VideoPlayer {
             constructor() {
                 this.currentFrame = 0;
@@ -3019,6 +3087,8 @@
                 this.rawPoseLogged = false;          // Guard so we only dump one raw pose
                 this.poseDebugLine = null;           // Optional forward vector debug line
                 this.lastPoseDebugFrame = null;
+                this.loggedFirstTransform = false;   // Guard for point cloud transform logging
+                this.pathProgressMarker = null;      // Animated marker showing current position on path
             }
 
             setCombinedPointCloud(mesh, data) {
@@ -3083,35 +3153,77 @@
                 }
             }
 
+            /**
+             * Load and display a specific video frame.
+             *
+             * **Frame Data Structure:**
+             * - vertices: Point positions in CAMERA SPACE
+             * - colors: RGB colors for each point
+             * - camera_pose: Extrinsics matrix (world-to-camera, w2c)
+             * - camera_pose_col_major_flat: (if available) Column-major flat c2w
+             * - intrinsics: 3x3 camera intrinsics matrix
+             *
+             * **Processing Steps:**
+             * 1. Load frame from buffer (preload if needed)
+             * 2. Parse camera pose to c2w matrix
+             * 3. Transform point cloud from camera space to world space
+             * 4. Update visualization (frustum, path highlight, etc.)
+             */
             async loadFrame(frameIndex) {
                 if (!this.videoInfo) return;
 
-                // Check buffer first
+                // Ensure frame is in buffer
                 if (!this.frameBuffer.has(frameIndex)) {
                     await this.preloadFrames(frameIndex);
                 }
 
                 const frame = this.frameBuffer.get(frameIndex);
                 if (!frame) {
-                    console.error('Frame not in buffer:', frameIndex);
+                    console.error('❌ Frame not in buffer:', frameIndex);
                     return;
                 }
 
-                // Cache pose as camera-to-world (backend already provides c2w)
+                // Parse camera pose
+                // Note: Backend may provide camera_pose_col_major_flat (c2w, ready for Three.js)
+                // or camera_pose (extrinsics, w2c, needs inversion for c2w)
                 const shouldLogRawPose = (
                     POSE_DEBUG_CONFIG.logFirstRawPose &&
                     !this.rawPoseLogged &&
                     frameIndex === POSE_DEBUG_CONFIG.rawPoseFrameIndex
                 );
-                const framePose = this.poseToMatrix(frame.camera_pose, {
-                    logRaw: shouldLogRawPose,
-                    frameIndex
-                });
-                frame._c2w_matrix = framePose;
-                frame._c2w = framePose ? framePose.toArray() : frame.camera_pose;
+
+                let c2wMatrix;
+                if (frame.camera_pose_col_major_flat) {
+                    // Optimal: Pre-computed c2w in column-major format
+                    c2wMatrix = this.poseToMatrix(frame.camera_pose_col_major_flat, {
+                        logRaw: shouldLogRawPose,
+                        frameIndex,
+                        alreadyColumnMajor: true
+                    });
+                } else if (frame.camera_pose) {
+                    // Fallback: Parse extrinsics (w2c) and invert to c2w
+                    const extrinsics = this.poseToMatrix(frame.camera_pose, {
+                        logRaw: shouldLogRawPose,
+                        frameIndex,
+                        alreadyColumnMajor: false
+                    });
+                    c2wMatrix = extrinsics ? new THREE.Matrix4().copy(extrinsics).invert() : null;
+
+                    if (shouldLogRawPose && c2wMatrix) {
+                        console.log('🔄 Inverted extrinsics to c2w for frame', frameIndex);
+                    }
+                }
+
+                // Cache c2w matrix for other functions
+                frame._c2w_matrix = c2wMatrix;
+                frame._c2w = c2wMatrix ? c2wMatrix.toArray() : null;
 
                 this.currentFrame = frameIndex;
-                this.updatePointCloud(frame.vertices, frame.colors);
+
+                // Transform point cloud to world space using extrinsics (w2c)
+                // The transformPointsToWorldSpace function expects w2c and inverts internally
+                this.updatePointCloud(frame.vertices, frame.colors, frame.camera_pose);
+
                 this.updateFrameCounter();
                 this.updateCameraHelper(frame);
                 this.syncCloudVisibility();
@@ -3121,14 +3233,17 @@
                 if (slider) slider.value = frameIndex;
 
                 // Update viewer camera if following mode is enabled
-                if (this.followCamera && frame._c2w_matrix && frame.intrinsics) {
-                    this.updateViewerCamera(frame._c2w_matrix, frame.intrinsics, { frameIndex });
+                if (this.followCamera && c2wMatrix && frame.intrinsics) {
+                    this.updateViewerCamera(c2wMatrix, frame.intrinsics, { frameIndex });
                 }
 
                 // Highlight current camera frustum
                 if (this.showCameraPath) {
                     this.highlightCurrentFrustum(frameIndex);
                 }
+
+                // Update progress marker along camera path
+                this.updatePathProgressMarker(frameIndex);
 
                 // Preload next batch if needed
                 if ((frameIndex + 1) % this.bufferSize === 0) {
@@ -3154,9 +3269,22 @@
                 }
             }
 
-            // Pose normalization: viewer expects camera-to-world, column-major (-Z forward) matrices.
-            // Backend supplies camera-to-world in row-major (numpy tolist); transpose here so the rest of the
-            // viewer can always consume camera-to-world, column-major matrices.
+            /**
+             * Convert backend pose data to Three.js Matrix4 (camera-to-world).
+             *
+             * @param {Array|THREE.Matrix4} pose - Pose data from backend
+             * @param {Object} options - Conversion options
+             * @param {boolean} options.logRaw - Log raw pose for debugging
+             * @param {number} options.frameIndex - Frame index for debug logging
+             * @param {boolean} options.alreadyColumnMajor - If true, pose is already in column-major format
+             * @returns {THREE.Matrix4|null} Camera-to-world transformation matrix
+             *
+             * **Implementation Details:**
+             * - Backend provides "poses_col_major_flat" which is already in the correct format for Three.js
+             * - These are c2w matrices, transposed for column-major ordering
+             * - Simply load them with Matrix4.fromArray() without additional transposition
+             * - Fallback to row-major c2w_poses if column-major not available (requires transpose)
+             */
             poseToMatrix(pose, options = {}) {
                 if (!pose) return null;
                 const {
@@ -3165,34 +3293,70 @@
                     alreadyColumnMajor = false
                 } = options;
 
+                // If already a Matrix4, clone and return
                 if (pose instanceof THREE.Matrix4) {
                     return pose.clone();
                 }
 
+                // Flatten array if nested
                 const flat = pose.flat ? pose.flat() : [].concat(...pose);
+
+                // Pad 3x4 matrices to 4x4
                 const normalizedFlat = flat.length === 12 ? [...flat, 0, 0, 0, 1] : flat;
 
+                // Debug logging (only once)
                 if (logRaw && !this.rawPoseLogged) {
-                    try {
-                        console.log(`[pose-debug] Raw pose from backend (frame ${frameIndex ?? 'n/a'})`, JSON.stringify(pose));
-                        console.log('[pose-debug] Translation assuming row-major [*,3]:', [flat[3], flat[7], flat[11]]);
-                        console.log('[pose-debug] Translation assuming column-major indices 12-14:', [normalizedFlat[12], normalizedFlat[13], normalizedFlat[14]]);
-                    } catch (err) {
-                        console.warn('Failed to log raw pose', err);
-                    }
+                    console.group(`🎥 Pose Debug (Frame ${frameIndex ?? 'n/a'})`);
+                    console.log('Raw pose from backend:', JSON.stringify(pose));
+                    console.log('Flattened (16 elements):', normalizedFlat);
+                    console.log('Already column-major?', alreadyColumnMajor);
+
+                    // Show both interpretations
+                    const rowMajorPos = [normalizedFlat[3], normalizedFlat[7], normalizedFlat[11]];
+                    const colMajorPos = [normalizedFlat[12], normalizedFlat[13], normalizedFlat[14]];
+                    console.log('Position if row-major (indices 3,7,11):', rowMajorPos);
+                    console.log('Position if col-major (indices 12,13,14):', colMajorPos);
+                    console.groupEnd();
                     this.rawPoseLogged = true;
                 }
 
-                // Backend returns camera-to-world poses as row-major (numpy tolist); extrinsics were inverted server-side.
-                // Viewer expects camera-to-world, column-major (-Z forward) for Three.js Matrix4, so transpose only (no invert).
+                // Create Three.js matrix
                 const m = new THREE.Matrix4();
                 m.fromArray(normalizedFlat);
+
+                // If not already column-major, transpose to convert row-major to column-major
                 if (!alreadyColumnMajor) {
-                    m.transpose(); // row-major -> column-major
+                    m.transpose();
                 }
+
                 return m;
             }
 
+            extractPositionFromPose(pose) {
+                if (!pose) return new THREE.Vector3(0, 0, 0);
+                const flat = pose.flat ? pose.flat() : [].concat(...pose);
+                const normalizedFlat = flat.length === 12 ? [...flat, 0, 0, 0, 1] : flat;
+                const rowTranslation = [normalizedFlat[3] || 0, normalizedFlat[7] || 0, normalizedFlat[11] || 0];
+                const colTranslation = [normalizedFlat[12] || 0, normalizedFlat[13] || 0, normalizedFlat[14] || 0];
+                const rowMag = Math.abs(rowTranslation[0]) + Math.abs(rowTranslation[1]) + Math.abs(rowTranslation[2]);
+                const colMag = Math.abs(colTranslation[0]) + Math.abs(colTranslation[1]) + Math.abs(colTranslation[2]);
+                const t = (colMag > rowMag) ? colTranslation : rowTranslation;
+                return new THREE.Vector3(t[0], t[1], t[2]);
+            }
+
+            /**
+             * Load and parse camera path data from backend.
+             *
+             * **Backend API Contract:**
+             * - poses_col_major_flat: c2w matrices, column-major flat (preferred, ready for Three.js)
+             * - c2w_poses: c2w matrices, row-major nested (fallback, requires transpose)
+             * - positions: Camera positions extracted from c2w[:3, 3] (most reliable)
+             *
+             * **Returns:**
+             * - c2w_matrices: Array of THREE.Matrix4 (camera-to-world transformations)
+             * - positions: Array of [x, y, z] camera positions
+             * - cameraSpline: CatmullRomCurve3 for smooth path interpolation
+             */
             async ensureCameraPathData() {
                 if (this.cameraPathData) {
                     return this.cameraPathData;
@@ -3202,47 +3366,89 @@
                     const res = await fetch('/api/video/camera_path');
                     const raw = await res.json();
 
-                    const rawPoses = raw.poses || raw.c2w_poses || [];
-                    const poseMats = rawPoses
-                        .map((p, idx) => this.poseToMatrix(p, {
-                            logRaw: POSE_DEBUG_CONFIG.logFirstRawPose && !this.rawPoseLogged && idx === POSE_DEBUG_CONFIG.rawPoseFrameIndex,
-                            frameIndex: idx
-                        }))
-                        .filter(Boolean);
+                    console.log('📡 Loaded camera path data:', {
+                        num_frames: raw.num_frames,
+                        has_col_major: !!(raw.poses_col_major_flat || raw.c2w_poses_col_major_flat),
+                        has_positions: !!(raw.positions && raw.positions.length)
+                    });
 
-                    // Derive positions from normalized matrices so the path always matches the actual camera trajectory.
+                    // Prefer column-major flat format (already correct for Three.js)
+                    const colMajorFlat = raw.poses_col_major_flat || raw.c2w_poses_col_major_flat || [];
+                    const rowMajorNested = raw.c2w_poses || raw.poses || [];
+
+                    // Convert poses to Matrix4
+                    let poseMats = [];
+                    if (colMajorFlat.length > 0) {
+                        // Use pre-transposed column-major data (optimal path)
+                        poseMats = colMajorFlat.map((p, idx) => this.poseToMatrix(p, {
+                            logRaw: POSE_DEBUG_CONFIG.logFirstRawPose && !this.rawPoseLogged && idx === POSE_DEBUG_CONFIG.rawPoseFrameIndex,
+                            frameIndex: idx,
+                            alreadyColumnMajor: true  // No transpose needed
+                        }));
+                        console.log('✅ Using optimized column-major poses');
+                    } else if (rowMajorNested.length > 0) {
+                        // Fallback: row-major c2w_poses (requires transpose)
+                        poseMats = rowMajorNested.map((p, idx) => this.poseToMatrix(p, {
+                            logRaw: POSE_DEBUG_CONFIG.logFirstRawPose && !this.rawPoseLogged && idx === POSE_DEBUG_CONFIG.rawPoseFrameIndex,
+                            frameIndex: idx,
+                            alreadyColumnMajor: false  // Needs transpose
+                        }));
+                        console.log('⚠️ Using row-major poses (slower, requires transpose)');
+                    }
+
+                    poseMats = poseMats.filter(Boolean);
+
+                    // Extract camera positions
                     let positions = [];
-                    if (poseMats.length) {
-                        positions = poseMats.map((m) => {
+
+                    // Method 1: Use backend-provided positions (most reliable)
+                    if (raw.positions && raw.positions.length > 0) {
+                        positions = raw.positions.map(pos => new THREE.Vector3(...pos));
+                        console.log('✅ Using backend-provided positions');
+                    }
+                    // Method 2: Extract from c2w matrices
+                    else if (poseMats.length > 0) {
+                        positions = poseMats.map(m => {
                             const v = new THREE.Vector3();
                             v.setFromMatrixPosition(m);
                             return v;
                         });
-                    } else if (raw.positions && raw.positions.length) {
-                        positions = raw.positions.map(pos => new THREE.Vector3(...pos));
+                        console.log('ℹ️ Extracted positions from matrices');
                     }
 
-                    // Build spline for smooth playback/attachments
+                    // Validate positions
+                    const allAtOrigin = positions.length > 0 && positions.every(p => p.length() < 0.001);
+                    if (allAtOrigin) {
+                        console.error('❌ All camera positions are at origin! Check pose inversion.');
+                    } else if (positions.length > 0) {
+                        console.log(`📍 Camera positions: ${positions.length} frames, range: ${
+                            Math.min(...positions.map(p => p.length())).toFixed(2)} - ${
+                            Math.max(...positions.map(p => p.length())).toFixed(2)} units from origin`);
+                    }
+
+                    // Build smooth spline for path interpolation
                     if (positions.length >= 2) {
                         this.cameraSpline = new THREE.CatmullRomCurve3(positions);
                         this.cameraSpline.curveType = 'catmullrom';
+                        console.log('✅ Created smooth camera path spline');
                     }
 
-                    // Store normalized data (c2w + positions)
+                    // Store processed data
                     this.cameraPathData = {
                         ...raw,
                         positions: positions.map(p => [p.x, p.y, p.z]),
                         c2w_poses: poseMats.map(m => m.toArray()),
                         c2w_matrices: poseMats
                     };
+
                     return this.cameraPathData;
                 } catch (err) {
-                    console.error('Failed to load camera path data:', err);
+                    console.error('❌ Failed to load camera path data:', err);
                     return null;
                 }
             }
 
-            updatePointCloud(vertices, colors) {
+            updatePointCloud(vertices, colors, cameraPose = null) {
                 if (!scene) return;
 
                 // Remove old point cloud
@@ -3253,8 +3459,13 @@
                 }
 
                 // Create new point cloud
-                const positions = new Float32Array(vertices.flat());
+                let positions = new Float32Array(vertices.flat());
                 const colorsArray = new Float32Array(colors.flat().map(c => c / 255));
+
+                // If camera pose is provided, transform point cloud from camera space to world space
+                if (cameraPose && positions.length > 0) {
+                    positions = this.transformPointsToWorldSpace(positions, cameraPose);
+                }
 
                 const geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -3271,6 +3482,73 @@
                 scene.add(this.pointCloudMesh);
 
                 this.syncCloudVisibility();
+            }
+
+            /**
+             * Transform point cloud from camera space to world space.
+             *
+             * **Critical Understanding:**
+             * - Backend provides per-frame vertices in CAMERA SPACE (relative to that camera)
+             * - Backend provides "camera_pose" as EXTRINSICS (world-to-camera, w2c)
+             * - To place points in world space: P_world = c2w * P_camera
+             * - Therefore: c2w = inverse(extrinsics)
+             *
+             * @param {Float32Array} positions - Point positions in camera space [x,y,z,x,y,z,...]
+             * @param {Array|THREE.Matrix4} cameraPose - Extrinsics matrix (world-to-camera)
+             * @returns {Float32Array} Transformed positions in world space
+             */
+            transformPointsToWorldSpace(positions, cameraPose) {
+                if (!cameraPose) {
+                    console.warn('⚠️ No camera pose provided, points remain in camera space');
+                    return positions;
+                }
+
+                // Parse camera pose (extrinsics: world-to-camera)
+                let extrinsics;
+                if (cameraPose instanceof THREE.Matrix4) {
+                    extrinsics = cameraPose.clone();
+                } else {
+                    const flat = cameraPose.flat ? cameraPose.flat() : [].concat(...cameraPose);
+                    const normalized = flat.length === 12 ? [...flat, 0, 0, 0, 1] : flat;
+                    extrinsics = new THREE.Matrix4().fromArray(normalized);
+                    // Note: Backend sends row-major, but since this is extrinsics (not c2w),
+                    // we may need to transpose. Check if "camera_pose_col_major_flat" exists.
+                    // For now, assume row-major and transpose.
+                    extrinsics.transpose();
+                }
+
+                // Invert extrinsics to get camera-to-world transformation
+                const c2w = new THREE.Matrix4().copy(extrinsics).invert();
+
+                // Debug: Log first transformation
+                if (!this.loggedFirstTransform) {
+                    console.group('🔄 First Point Cloud Transform');
+                    console.log('Extrinsics (w2c) position:', new THREE.Vector3().setFromMatrixPosition(extrinsics).toArray());
+                    console.log('Camera-to-world (c2w) position:', new THREE.Vector3().setFromMatrixPosition(c2w).toArray());
+
+                    // Test point: 1 meter forward in camera space (0, 0, -1 in OpenGL/Three.js camera coords)
+                    const testPoint = new THREE.Vector3(0, 0, -1);
+                    const worldPoint = testPoint.applyMatrix4(c2w);
+                    console.log('Test: camera(0,0,-1) → world:', worldPoint.toArray().map(v => v.toFixed(2)));
+                    console.groupEnd();
+                    this.loggedFirstTransform = true;
+                }
+
+                // Transform all points from camera space to world space
+                const numPoints = positions.length / 3;
+                const transformedPositions = new Float32Array(positions.length);
+                const point = new THREE.Vector3();
+
+                for (let i = 0; i < numPoints; i++) {
+                    const idx = i * 3;
+                    point.set(positions[idx], positions[idx + 1], positions[idx + 2]);
+                    point.applyMatrix4(c2w);
+                    transformedPositions[idx] = point.x;
+                    transformedPositions[idx + 1] = point.y;
+                    transformedPositions[idx + 2] = point.z;
+                }
+
+                return transformedPositions;
             }
 
             updateFrameCounter() {
@@ -3363,6 +3641,17 @@
                 }
             }
 
+            /**
+             * Load and display the camera path with smooth spline interpolation.
+             *
+             * **Visualization Elements:**
+             * 1. **Smooth Spline Curve**: Catmull-Rom interpolation through camera positions
+             * 2. **Path Tube**: Optional 3D tube geometry following the spline
+             * 3. **Directional Gradient**: Color gradient from start (cyan) to end (magenta)
+             * 4. **Camera Frustums**: Wireframe pyramids at each frame position
+             * 5. **Position Markers**: Spheres at keyframe positions
+             * 6. **Motion Indicators**: Velocity-based coloring along the path
+             */
             async loadAndDisplayCameraPath() {
                 try {
                     const data = await this.ensureCameraPathData();
@@ -3370,41 +3659,129 @@
 
                     this.clearCameraPath();
 
-                    // Draw camera path line
-                    const pathPoints = (data.positions || []).map(pos => new THREE.Vector3(...pos));
-                    const pathGeometry = new THREE.BufferGeometry().setFromPoints(pathPoints);
+                    // Extract camera positions
+                    const keyframePositions = (data.positions || []).map(pos => new THREE.Vector3(...pos));
+
+                    if (keyframePositions.length === 0) {
+                        console.error('❌ No camera positions available');
+                        return;
+                    }
+
+                    console.log('📹 Camera positions (first 3):',
+                        keyframePositions.slice(0, 3).map(p =>
+                            `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`
+                        ).join(', ')
+                    );
+
+                    // Validate positions
+                    const allAtOrigin = keyframePositions.every(p => p.length() < 0.001);
+                    if (allAtOrigin) {
+                        console.error('❌ All camera positions are at origin! Check pose inversion.');
+                        return;
+                    }
+
+                    // ========== CREATE SMOOTH SPLINE PATH ==========
+                    if (!this.cameraSpline || keyframePositions.length < 2) {
+                        console.warn('⚠️ Cannot create spline with < 2 points');
+                        return;
+                    }
+
+                    // Create high-resolution smooth path
+                    const numSplineSamples = Math.max(200, keyframePositions.length * 15);
+                    const smoothPathPoints = this.cameraSpline.getPoints(numSplineSamples);
+
+                    console.log(`✅ Generated smooth spline: ${keyframePositions.length} keyframes → ${numSplineSamples} smooth points`);
+
+                    // ========== CREATE PATH VISUALIZATION ==========
+
+                    // Option 1: Standard line with gradient coloring
+                    const pathGeometry = new THREE.BufferGeometry().setFromPoints(smoothPathPoints);
+
+                    // Create gradient colors from start (cyan) to end (magenta) along path
+                    const colors = new Float32Array(smoothPathPoints.length * 3);
+                    for (let i = 0; i < smoothPathPoints.length; i++) {
+                        const t = i / (smoothPathPoints.length - 1);
+                        // Gradient: cyan (0,1,1) → blue (0,0.5,1) → magenta (1,0,1)
+                        colors[i * 3 + 0] = t; // R: 0 → 1
+                        colors[i * 3 + 1] = 1 - t * 0.5; // G: 1 → 0.5
+                        colors[i * 3 + 2] = 1; // B: 1
+                    }
+                    pathGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
                     const pathMaterial = new THREE.LineBasicMaterial({
-                        color: 0xff0000,
-                        linewidth: 2,
-                        opacity: 0.8,
+                        vertexColors: true,
+                        linewidth: 3,
+                        opacity: 0.9,
                         transparent: true
                     });
+
                     this.cameraPathLine = new THREE.Line(pathGeometry, pathMaterial);
+                    this.cameraPathLine.renderOrder = 999; // Render on top
                     scene.add(this.cameraPathLine);
 
+                    // ========== ADD TUBE GEOMETRY FOR 3D EFFECT (Optional) ==========
+                    // Create a tube geometry that follows the spline for a more 3D appearance
+                    const tubeGeometry = new THREE.TubeGeometry(
+                        this.cameraSpline,
+                        numSplineSamples,
+                        0.008, // Tube radius
+                        8, // Radial segments
+                        false // Not closed
+                    );
+
+                    // Create gradient material for the tube
+                    const tubeColors = new Float32Array(tubeGeometry.attributes.position.count * 3);
+                    for (let i = 0; i < tubeGeometry.attributes.position.count; i++) {
+                        const t = (i / tubeGeometry.attributes.position.count);
+                        tubeColors[i * 3 + 0] = t; // R
+                        tubeColors[i * 3 + 1] = 1 - t * 0.5; // G
+                        tubeColors[i * 3 + 2] = 1; // B
+                    }
+                    tubeGeometry.setAttribute('color', new THREE.BufferAttribute(tubeColors, 3));
+
+                    const tubeMaterial = new THREE.MeshBasicMaterial({
+                        vertexColors: true,
+                        opacity: 0.6,
+                        transparent: true,
+                        side: THREE.DoubleSide
+                    });
+
+                    const tubeMesh = new THREE.Mesh(tubeGeometry, tubeMaterial);
+                    tubeMesh.renderOrder = 998;
+                    this.cameraPathLine.add(tubeMesh); // Add as child so it gets cleared together
+
+                    console.log(`✅ Camera path spline: ${smoothPathPoints.length} smooth points with 3D tube`);
+
+                    // ========== ADD CAMERA FRUSTUMS ==========
                     const poseSource = (data.c2w_matrices && data.c2w_matrices.length)
                         ? data.c2w_matrices
-                        : (data.c2w_poses || data.poses || []);
+                        : (data.poses_col_major_flat || data.c2w_poses_col_major_flat || data.c2w_poses || data.poses || []);
+
                     const poses = poseSource
                         .map((p) => p instanceof THREE.Matrix4
                             ? p
-                            : this.poseToMatrix(p, { alreadyColumnMajor: !!data.c2w_poses && !data.c2w_matrices }))
+                            : this.poseToMatrix(p, {
+                                alreadyColumnMajor: !!(data.c2w_matrices && data.c2w_matrices.length) ||
+                                    !!(data.poses_col_major_flat || data.c2w_poses_col_major_flat)
+                            }))
                         .filter(Boolean);
 
-                    // Add camera frustums
                     poses.forEach((pose, index) => {
                         const frustum = this.createCameraFrustum(pose, index);
                         this.cameraFrustums.push(frustum);
                         scene.add(frustum);
                     });
 
-                    // Add camera origin markers (small green spheres) at each pose position
+                    console.log(`✅ Added ${poses.length} camera frustums`);
+
+                    // ========== ADD KEYFRAME POSITION MARKERS ==========
                     const originGeom = new THREE.SphereGeometry(0.03, 12, 12);
                     const originMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, opacity: 0.7, transparent: true });
                     const activeMat = new THREE.MeshBasicMaterial({ color: 0xffff00, opacity: 1.0, transparent: true });
-                    (data.positions || []).forEach((pos, idx) => {
+
+                    keyframePositions.forEach((pos, idx) => {
                         const mesh = new THREE.Mesh(originGeom, originMat.clone());
-                        mesh.position.set(pos[0], pos[1], pos[2]);
+                        mesh.position.copy(pos);
                         mesh.userData.frameIndex = idx;
                         mesh.userData.activeMat = activeMat;
                         mesh.userData.baseMat = mesh.material;
@@ -3412,12 +3789,124 @@
                         scene.add(mesh);
                     });
 
-                    console.log('Camera path displayed with', data.num_frames, 'poses');
+                    console.log(`✅ Added ${keyframePositions.length} keyframe markers`);
+
+                    // ========== ADD DIRECTION ARROWS ALONG PATH ==========
+                    // Add arrows showing camera direction at intervals
+                    const arrowInterval = Math.max(1, Math.floor(keyframePositions.length / 10));
+                    poses.forEach((pose, idx) => {
+                        if (idx % arrowInterval === 0 || idx === poses.length - 1) {
+                            const position = new THREE.Vector3();
+                            const quaternion = new THREE.Quaternion();
+                            const scale = new THREE.Vector3();
+                            pose.decompose(position, quaternion, scale);
+
+                            // Camera looks down -Z, so forward direction is negative Z in camera space
+                            const forward = new THREE.Vector3(0, 0, -1);
+                            forward.applyQuaternion(quaternion).normalize();
+
+                            // Create arrow showing direction
+                            const arrowHelper = new THREE.ArrowHelper(
+                                forward,
+                                position,
+                                0.2, // Length
+                                idx === 0 ? 0x00ffff : (idx === poses.length - 1 ? 0xff00ff : 0x00ff88), // Cyan for start, magenta for end
+                                0.08, // Head length
+                                0.06  // Head width
+                            );
+                            arrowHelper.userData.isDirectionArrow = true;
+                            this.cameraPathLine.add(arrowHelper);
+                        }
+                    });
+
+                    console.log(`✅ Added direction arrows at ${Math.ceil(poses.length / arrowInterval)} positions`);
+
+                    // ========== ADD START/END MARKERS ==========
+                    // Special markers for start and end of path
+                    if (keyframePositions.length > 0) {
+                        // Start marker (larger cyan sphere)
+                        const startGeom = new THREE.SphereGeometry(0.05, 16, 16);
+                        const startMat = new THREE.MeshBasicMaterial({
+                            color: 0x00ffff,
+                            opacity: 0.9,
+                            transparent: true
+                        });
+                        const startMarker = new THREE.Mesh(startGeom, startMat);
+                        startMarker.position.copy(keyframePositions[0]);
+                        this.cameraPathLine.add(startMarker);
+
+                        // End marker (larger magenta sphere)
+                        const endGeom = new THREE.SphereGeometry(0.05, 16, 16);
+                        const endMat = new THREE.MeshBasicMaterial({
+                            color: 0xff00ff,
+                            opacity: 0.9,
+                            transparent: true
+                        });
+                        const endMarker = new THREE.Mesh(endGeom, endMat);
+                        endMarker.position.copy(keyframePositions[keyframePositions.length - 1]);
+                        this.cameraPathLine.add(endMarker);
+
+                        console.log('✅ Added start/end markers (cyan/magenta)');
+                    }
+
+                    // ========== ADD ANIMATED PROGRESS MARKER ==========
+                    // Create a glowing sphere that moves along the path during playback
+                    const progressGeom = new THREE.SphereGeometry(0.06, 16, 16);
+                    const progressMat = new THREE.MeshBasicMaterial({
+                        color: 0xffff00,
+                        opacity: 1.0,
+                        transparent: false
+                    });
+                    this.pathProgressMarker = new THREE.Mesh(progressGeom, progressMat);
+                    this.pathProgressMarker.visible = true;
+
+                    // Add glowing effect
+                    const glowGeom = new THREE.SphereGeometry(0.09, 16, 16);
+                    const glowMat = new THREE.MeshBasicMaterial({
+                        color: 0xffff00,
+                        opacity: 0.3,
+                        transparent: true
+                    });
+                    const glowSphere = new THREE.Mesh(glowGeom, glowMat);
+                    this.pathProgressMarker.add(glowSphere);
+
+                    // Position at first keyframe
+                    if (keyframePositions.length > 0) {
+                        this.pathProgressMarker.position.copy(keyframePositions[0]);
+                    }
+
+                    scene.add(this.pathProgressMarker);
+                    console.log('✅ Added animated progress marker (yellow sphere)');
+
+                    // ========== SUMMARY ==========
+                    console.group('📹 Camera Path Visualization Complete');
+                    console.log(`• Path Type: Smooth Catmull-Rom Spline`);
+                    console.log(`• Keyframes: ${keyframePositions.length}`);
+                    console.log(`• Smooth Points: ${smoothPathPoints.length}`);
+                    console.log(`• Camera Frustums: ${poses.length}`);
+                    console.log(`• Visual Style: Gradient tube with direction arrows`);
+                    console.log(`• Color Coding: Cyan (start) → Magenta (end)`);
+                    console.log(`• Animated Marker: Yellow glowing sphere tracks playback`);
+                    console.groupEnd();
                 } catch (err) {
-                    console.error('Failed to load camera path:', err);
+                    console.error('❌ Failed to load camera path:', err);
                 }
             }
 
+            /**
+             * Create a camera frustum visualization.
+             *
+             * @param {THREE.Matrix4|Array} poseMatrix - Camera-to-world transformation
+             * @param {number} index - Frame index
+             * @param {Object} options - Options (color, frameData)
+             * @returns {THREE.Group} Frustum visualization group
+             *
+             * **Frustum Geometry:**
+             * - Defined in camera space: origin at (0,0,0), looking down -Z
+             * - Far plane is a rectangle at distance `far` in front of camera
+             * - Dimensions calculated from FOV and aspect ratio (from intrinsics)
+             * - Transformed to world space using c2w matrix
+             */
             createCameraFrustum(poseMatrix, index, options = {}) {
                 // Get intrinsics for this frame if available
                 const frame = options.frameData || this.frameBuffer.get(index);
@@ -3450,16 +3939,17 @@
                 const halfHeight = far * Math.tan(THREE.MathUtils.degToRad(fov) / 2);
                 const halfWidth = halfHeight * aspect;
 
-                // Define frustum vertices
+                // Define frustum vertices in camera space
+                // Camera looks down -Z axis (Three.js/OpenGL convention)
                 const vertices = [
-                    new THREE.Vector3(0, 0, 0),                                 // 0: Camera origin
-                    new THREE.Vector3(-halfWidth, halfHeight, -far),            // 1: Top-left
-                    new THREE.Vector3(halfWidth, halfHeight, -far),             // 2: Top-right
-                    new THREE.Vector3(halfWidth, -halfHeight, -far),            // 3: Bottom-right
-                    new THREE.Vector3(-halfWidth, -halfHeight, -far)            // 4: Bottom-left
+                    new THREE.Vector3(0, 0, 0),                           // 0: Camera origin
+                    new THREE.Vector3(-halfWidth, halfHeight, -far),      // 1: Top-left far
+                    new THREE.Vector3(halfWidth, halfHeight, -far),       // 2: Top-right far
+                    new THREE.Vector3(halfWidth, -halfHeight, -far),      // 3: Bottom-right far
+                    new THREE.Vector3(-halfWidth, -halfHeight, -far)      // 4: Bottom-left far
                 ];
 
-                // Create edges
+                // Create edges connecting frustum vertices
                 const edges = [
                     // Lines from origin to far corners
                     [0, 1], [0, 2], [0, 3], [0, 4],
@@ -3483,12 +3973,18 @@
                     frustumLines.add(line);
                 });
 
-                // Apply camera pose (camera-to-world)
+                // Apply camera-to-world transformation
+                // poseMatrix should be c2w (camera space → world space)
                 const matrix = new THREE.Matrix4();
-                const flatMatrix = poseMatrix instanceof THREE.Matrix4
-                    ? poseMatrix.elements
-                    : (poseMatrix.flat ? poseMatrix.flat() : [].concat(...poseMatrix));
-                matrix.fromArray(flatMatrix);
+                if (poseMatrix instanceof THREE.Matrix4) {
+                    matrix.copy(poseMatrix);
+                } else {
+                    const flatMatrix = poseMatrix.flat ? poseMatrix.flat() : [].concat(...poseMatrix);
+                    matrix.fromArray(flatMatrix);
+                    // Note: If this is from backend and not already transposed, may need transpose here
+                    // But our ensureCameraPathData() already handles this, providing c2w matrices
+                }
+
                 frustumLines.applyMatrix4(matrix);
 
                 frustumLines.userData.frameIndex = index;
@@ -3498,25 +3994,50 @@
                 return frustumLines;
             }
 
+            /**
+             * Clear all camera path visualization elements from the scene.
+             */
             clearCameraPath() {
+                // Remove main path line (includes tube and children)
                 if (this.cameraPathLine) {
                     scene.remove(this.cameraPathLine);
-                    if (this.cameraPathLine.geometry) this.cameraPathLine.geometry.dispose();
-                    if (this.cameraPathLine.material) this.cameraPathLine.material.dispose();
+                    // Dispose of all children recursively
+                    this.cameraPathLine.traverse((child) => {
+                        if (child.geometry) child.geometry.dispose();
+                        if (child.material) {
+                            if (Array.isArray(child.material)) {
+                                child.material.forEach(m => m.dispose && m.dispose());
+                            } else if (child.material.dispose) {
+                                child.material.dispose();
+                            }
+                        }
+                    });
                     this.cameraPathLine = null;
                 }
 
+                // Remove camera frustums
                 this.cameraFrustums.forEach(frustum => {
                     this.disposeFrustum(frustum);
                 });
                 this.cameraFrustums = [];
 
+                // Remove keyframe position markers
                 this.cameraOrigins.forEach(origin => {
                     scene.remove(origin);
                     if (origin.geometry) origin.geometry.dispose();
                     if (origin.material && origin.material.dispose) origin.material.dispose();
                 });
                 this.cameraOrigins = [];
+
+                // Remove progress marker
+                if (this.pathProgressMarker) {
+                    scene.remove(this.pathProgressMarker);
+                    this.pathProgressMarker.traverse((child) => {
+                        if (child.geometry) child.geometry.dispose();
+                        if (child.material && child.material.dispose) child.material.dispose();
+                    });
+                    this.pathProgressMarker = null;
+                }
             }
 
             disposeFrustum(obj) {
@@ -3538,7 +4059,7 @@
                 if (!frame) return;
                 const c2wMat = frame._c2w_matrix
                     || (frame._c2w ? this.poseToMatrix(frame._c2w, { alreadyColumnMajor: true }) : null)
-                    || this.poseToMatrix(frame.camera_pose);
+                    || this.poseToMatrix(frame.camera_pose_col_major_flat || frame.camera_pose, { alreadyColumnMajor: !!frame.camera_pose_col_major_flat });
                 if (!c2wMat) return;
                 const poseForHelper = c2wMat;
                 const helper = this.createCameraFrustum(
@@ -3718,6 +4239,37 @@
                     }
                     this.poseDebugLine = null;
                 }
+            }
+
+            /**
+             * Update the animated progress marker position along the camera path.
+             *
+             * @param {number} frameIndex - Current frame index
+             */
+            updatePathProgressMarker(frameIndex) {
+                if (!this.pathProgressMarker || !this.cameraPathData) return;
+
+                const positions = this.cameraPathData.positions;
+                if (!positions || positions.length === 0) return;
+
+                // Clamp frame index to valid range
+                const clampedIndex = Math.min(frameIndex, positions.length - 1);
+
+                // Update marker position
+                const pos = positions[clampedIndex];
+                this.pathProgressMarker.position.set(pos[0], pos[1], pos[2]);
+
+                // Pulse animation based on playback state
+                if (this.isPlaying) {
+                    const time = Date.now() * 0.003;
+                    const scale = 1.0 + Math.sin(time) * 0.15;
+                    this.pathProgressMarker.scale.set(scale, scale, scale);
+                } else {
+                    this.pathProgressMarker.scale.set(1, 1, 1);
+                }
+
+                // Make visible only when path is shown
+                this.pathProgressMarker.visible = this.showCameraPath;
             }
 
             highlightCurrentFrustum(frameIndex) {

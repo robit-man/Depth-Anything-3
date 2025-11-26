@@ -1441,8 +1441,13 @@ def process_file():
                             "frame_index": i,
                             "vertices": frame_points.tolist(),
                             "colors": frame_colors.tolist(),
-                            # Store camera-to-world so downstream viewers/path use correct orientation
+                            # Store camera-to-world so downstream viewers/path use correct orientation.
+                            # Row-major (nested lists) is preserved for backward compatibility; flat column-major
+                            # is added for Three.js clients that want direct Matrix4.fromArray usage.
                             "camera_pose": (cam_to_world.tolist() if cam_to_world is not None else (np.eye(4).tolist())),
+                            "camera_pose_col_major_flat": (
+                                cam_to_world.T.reshape(-1).tolist() if cam_to_world is not None else np.eye(4).T.reshape(-1).tolist()
+                            ),
                             "intrinsics": ixt.tolist(),
                             "num_points": len(frame_points)
                         }
@@ -1610,19 +1615,48 @@ def get_camera_path():
         return jsonify({"error": "No video sequence available"}), 404
 
     camera_poses = [frame["camera_pose"] for frame in state.current_video_sequence["frames"]]
+    camera_poses_col_major_flat = []
+    camera_poses_c2w = []  # Camera-to-world poses
 
     # Extract camera positions from poses for path visualization
     camera_positions = []
     for pose in camera_poses:
-        # pose is 4x4 matrix, position is in the last column
-        pose_array = np.array(pose)
-        position = pose_array[:3, 3].tolist()
-        camera_positions.append(position)
+        # pose is 4x4 extrinsics matrix (world-to-camera)
+        # We need to invert it to get the camera position in world space
+        pose_array = np.array(pose, dtype=np.float32)
+
+        # Invert extrinsics to get camera-to-world
+        try:
+            c2w = np.linalg.inv(pose_array)
+            # Camera position in world space is the translation of c2w
+            position = c2w[:3, 3].tolist()
+            camera_positions.append(position)
+
+            # Store c2w for frustum visualization
+            camera_poses_c2w.append(c2w.tolist())
+
+            # Provide column-major flattening of c2w (Three.js Matrix4.fromArray-friendly)
+            camera_poses_col_major_flat.append(c2w.T.reshape(-1).tolist())
+        except Exception as e:
+            print(f"Warning: Failed to invert camera pose: {e}")
+            # Fallback: use identity
+            position = [0.0, 0.0, 0.0]
+            camera_positions.append(position)
+            camera_poses_col_major_flat.append(None)
+            camera_poses_c2w.append(pose_array.tolist())
 
     return jsonify({
-        "poses": camera_poses,
-        "positions": camera_positions,
-        "num_frames": len(camera_poses)
+        "poses": camera_poses,  # Original extrinsics (world-to-camera)
+        "c2w_poses": camera_poses_c2w,  # Inverted to camera-to-world
+        "poses_col_major_flat": camera_poses_col_major_flat,  # c2w in column-major format
+        "c2w_poses_col_major_flat": camera_poses_col_major_flat,  # Same as above, explicit name
+        "positions": camera_positions,  # Extracted from c2w matrices
+        "num_frames": len(camera_poses),
+        "pose_convention": {
+            "type": "camera_to_world",
+            "storage": "c2w_poses are 4x4 row-major; camera position in last column",
+            "column_major_flat": "poses_col_major_flat provides c2w transform flattened column-major for Three.js Matrix4.fromArray"
+        }
     })
 
 @app.route('/api/export/glb', methods=['GET'])
