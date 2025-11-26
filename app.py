@@ -122,6 +122,24 @@ def _jetson_torch_spec():
         except Exception as e:
             print(f"⚠️  Could not scrape Jetson torch wheels from {idx}: {e}")
 
+    # Fallback to known wheel URLs if scraping failed
+    if wheel_url is None:
+        fallback_wheels = [
+            # JP6 (v60) CP310
+            "https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp310-cp310-linux_aarch64.whl",
+            "https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+f70bd71a48.nv24.06.15634931-cp310-cp310-linux_aarch64.whl",
+            # JP5 (v51) CP38/CP39
+            "https://developer.download.nvidia.com/compute/redist/jp/v51/pytorch/torch-2.0.0a0+8aa34602.nv23.03-cp38-cp38-linux_aarch64.whl",
+        ]
+        for url in fallback_wheels:
+            if py_tag in url:
+                wheel_url = url
+                m = re.search(r"torch-([0-9a-zA-Z\\.\\+]+)\\.nv", url)
+                torch_ver = torch_ver or (m.group(1).split("+")[0] if m else None)
+                index_url = url.rsplit("/pytorch/", 1)[0]
+                print(f"ℹ️  Using fallback Jetson torch wheel: {wheel_url}")
+                break
+
     # Map torch version to a torchvision version (source build) as best-effort
     vision_ver = env_vision
     if vision_ver is None and torch_ver:
