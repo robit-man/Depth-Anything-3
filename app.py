@@ -585,6 +585,13 @@ def bootstrap_environment():
                     ("2", "0"): "v0.15.2",
                 }
                 vision_tag = vision_branch_map.get(tuple(torch_major_minor), "v0.19.0")
+                expected_vision_mm = ""
+                try:
+                    parts = vision_tag.lstrip("v").split(".")
+                    if len(parts) >= 2:
+                        expected_vision_mm = ".".join(parts[:2])
+                except Exception:
+                    expected_vision_mm = ""
 
                 print(f"   Installing torchvision from source (tag {vision_tag}, compatible with torch {torch_ver})")
                 print(f"   ⚠️  This may take 15-30 minutes on Jetson. Please be patient...")
@@ -638,16 +645,26 @@ def bootstrap_environment():
                 # Verify torchvision imports correctly (check for NMS operator)
                 print("   Verifying torchvision installation...")
                 vision_probe = (
-                    "import sys; "
+                    "import sys, torch\\n"
                     "try:\\n"
-                    "  import torchvision\\n"
-                    "  print('TORCHVISION_OK', torchvision.__version__)\\n"
-                    "  sys.exit(0)\\n"
-                    "except RuntimeError as e:\\n"
-                    "  if 'nms' in str(e):\\n"
-                    "    print('TORCHVISION_NMS_ERROR', str(e))\\n"
-                    "    sys.exit(1)\\n"
-                    "  raise\\n"
+                    " import torchvision\\n"
+                    " from torchvision.ops import nms\\n"
+                    "except Exception as e:\\n"
+                    " print('TORCHVISION_IMPORT_ERROR', type(e).__name__, e)\\n"
+                    " sys.exit(1)\\n"
+                    "torch_mm = '.'.join(torch.__version__.split('.')[:2])\\n"
+                    "vision_mm = '.'.join(torchvision.__version__.split('.')[:2])\\n"
+                    f"expected = '{expected_vision_mm}'\\n"
+                    "if expected and not vision_mm.startswith(expected):\\n"
+                    " print('TORCH_VISION_MISMATCH', torch.__version__, torchvision.__version__, expected)\\n"
+                    " sys.exit(1)\\n"
+                    "try:\\n"
+                    " nms(torch.tensor([[0., 0., 1., 1.]], dtype=torch.float32), torch.tensor([0.5]), 0.5)\\n"
+                    "except Exception as e:\\n"
+                    " print('TORCHVISION_NMS_ERROR', type(e).__name__, e)\\n"
+                    " sys.exit(1)\\n"
+                    "print('TORCHVISION_OK', torch.__version__, torchvision.__version__)\\n"
+                    "sys.exit(0)\\n"
                 )
                 vision_res = subprocess.run(
                     [str(venv_python), "-c", vision_probe],
@@ -655,32 +672,23 @@ def bootstrap_environment():
                     text=True,
                     env=_jetson_cuda_env(),
                 )
-                if vision_res.returncode != 0 and "TORCHVISION_NMS_ERROR" in vision_res.stdout:
-                    print("⚠️  Torchvision NMS operator error detected")
-                    print("   This means torchvision was built before PyTorch could fully load")
-                    print("   Rebuilding torchvision with --force-reinstall...")
-
-                    # Force rebuild torchvision
+                if vision_res.returncode != 0:
+                    output = vision_res.stdout.strip() or vision_res.stderr.strip()
+                    print("❌ Torchvision self-check failed (torch/vision ABI mismatch likely).")
+                    print(f"   Details: {output[:300] if output else 'n/a'}")
+                    print("   Fix by reinstalling matching torch/vision:")
+                    print("     pip uninstall -y torch torchvision")
+                    if wheel_url:
+                        print(f"     pip install {wheel_url}")
+                    else:
+                        print("     pip install <JETSON_TORCH_WHEEL_URL>")
+                    print(f"     pip install --no-cache-dir --no-deps git+https://github.com/pytorch/vision.git@{vision_tag}")
+                    print("   Then delete venv/.deps_installed and rerun python3 app.py")
                     try:
-                        subprocess.run([str(venv_pip), "uninstall", "-y", "torchvision"], check=True, capture_output=True)
-                        subprocess.run(
-                            [
-                                str(venv_pip),
-                                "install",
-                                "--no-cache-dir",
-                                "--no-deps",
-                                f"git+https://github.com/pytorch/vision.git@{vision_tag}",
-                            ],
-                            check=True,
-                            env=_jetson_cuda_env(),
-                            timeout=3600,
-                        )
-                        print("✓ Torchvision rebuilt successfully")
-                    except Exception as e:
-                        print(f"❌ Failed to rebuild torchvision: {e}")
-                        print("   You may need to rebuild manually:")
-                        print(f"   pip uninstall -y torchvision")
-                        print(f"   pip install --no-cache-dir --no-deps git+https://github.com/pytorch/vision.git@{vision_tag}")
+                        marker_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise SystemExit(1)
                 else:
                     print(f"✓ Torchvision verification passed: {vision_res.stdout.strip()}")
 
