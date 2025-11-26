@@ -57,6 +57,7 @@ def _jetson_cuda_env():
         "/usr/local/cuda-12/lib64",
         "/usr/local/cuda-12.2/lib64",
         "/usr/local/cuda-12.4/lib64",
+        "/usr/local/cuda-12.6/lib64",
         "/usr/lib/aarch64-linux-gnu",
         "/usr/lib/aarch64-linux-gnu/tegra",
         "/usr/lib/aarch64-linux-gnu/tegra-egl",
@@ -69,12 +70,110 @@ def _jetson_cuda_env():
 
     # Also set CUDA_HOME if not set
     if "CUDA_HOME" not in env:
-        for cuda_home in ["/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-12.2", "/usr/local/cuda-12.4"]:
+        for cuda_home in ["/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-12.2", "/usr/local/cuda-12.4", "/usr/local/cuda-12.6"]:
             if Path(cuda_home).exists():
                 env["CUDA_HOME"] = cuda_home
                 break
 
     return env
+
+def _install_jetson_cusparselt():
+    """
+    Install cuSPARSELt library required by PyTorch 2.4+ on JetPack 6.0+.
+    This library is not included by default in JetPack but is required for PyTorch.
+    Returns True if installed successfully or already present, False otherwise.
+    """
+    # Check if already installed
+    lib_paths = [
+        "/usr/local/cuda/lib64/libcusparseLt.so.0",
+        "/usr/local/cuda-12/lib64/libcusparseLt.so.0",
+        "/usr/local/cuda-12.2/lib64/libcusparseLt.so.0",
+        "/usr/local/cuda-12.4/lib64/libcusparseLt.so.0",
+        "/usr/local/cuda-12.6/lib64/libcusparseLt.so.0",
+        "/usr/lib/libcusparseLt.so.0",
+    ]
+
+    for lib_path in lib_paths:
+        if Path(lib_path).exists():
+            print(f"✓ libcusparseLt.so.0 found at {lib_path}")
+            return True
+
+    print("⚠️  libcusparseLt.so.0 not found - required by PyTorch 2.4+")
+    print("   Installing cuSPARSELt library...")
+
+    # Find CUDA home
+    cuda_home = None
+    for candidate in ["/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-12.2", "/usr/local/cuda-12.4", "/usr/local/cuda-12.6"]:
+        if Path(candidate).exists():
+            cuda_home = candidate
+            break
+
+    if not cuda_home:
+        print("❌ CUDA installation not found. Cannot install cuSPARSELt.")
+        return False
+
+    try:
+        import tempfile
+        import tarfile
+        import urllib.request
+
+        # cuSPARSELt version compatible with CUDA 12.2/12.4 (JetPack 6.0+)
+        CUSPARSELT_VERSION = "0.7.1.0"
+        CUSPARSELT_URL = f"https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-aarch64/libcusparse_lt-linux-aarch64-{CUSPARSELT_VERSION}-archive.tar.xz"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            archive_path = tmpdir / "cusparselt.tar.xz"
+
+            print(f"   Downloading cuSPARSELt {CUSPARSELT_VERSION}...")
+            urllib.request.urlretrieve(CUSPARSELT_URL, archive_path)
+
+            print("   Extracting archive...")
+            with tarfile.open(archive_path, 'r:xz') as tar:
+                tar.extractall(tmpdir)
+
+            # Find the extracted directory
+            extracted_dir = tmpdir / f"libcusparse_lt-linux-aarch64-{CUSPARSELT_VERSION}-archive"
+
+            if not extracted_dir.exists():
+                print(f"❌ Expected directory not found: {extracted_dir}")
+                return False
+
+            # Copy libraries and headers
+            print(f"   Installing to {cuda_home}...")
+
+            # Copy include files
+            include_src = extracted_dir / "include"
+            include_dst = Path(cuda_home) / "include"
+            if include_src.exists():
+                subprocess.run(["sudo", "cp", "-r", str(include_src) + "/.", str(include_dst)], check=True)
+
+            # Copy library files
+            lib_src = extracted_dir / "lib"
+            lib_dst = Path(cuda_home) / "lib64"
+            if lib_src.exists():
+                subprocess.run(["sudo", "cp", "-r", str(lib_src) + "/.", str(lib_dst)], check=True)
+
+            # Update linker cache
+            print("   Updating linker cache...")
+            subprocess.run(["sudo", "ldconfig"], check=True)
+
+            print("✓ cuSPARSELt installed successfully")
+            return True
+
+    except Exception as e:
+        print(f"❌ Failed to install cuSPARSELt: {e}")
+        print("\n   MANUAL INSTALLATION:")
+        print("   You can install cuSPARSELt manually using one of these methods:")
+        print("\n   Method 1 - Debian package (recommended):")
+        print("   wget https://developer.download.nvidia.com/compute/cusparselt/0.7.1/local_installers/cusparselt-local-tegra-repo-ubuntu2204-0.7.1_1.0-1_arm64.deb")
+        print("   sudo dpkg -i cusparselt-local-tegra-repo-ubuntu2204-0.7.1_1.0-1_arm64.deb")
+        print("   sudo cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.7.1/cusparselt-*-keyring.gpg /usr/share/keyrings/")
+        print("   sudo apt-get update")
+        print("   sudo apt-get -y install libcusparselt0 libcusparselt-dev")
+        print("\n   Method 2 - Download from:")
+        print("   https://developer.nvidia.com/cusparselt-downloads")
+        return False
 
 def _jetson_release_info():
     try:
@@ -386,6 +485,10 @@ def bootstrap_environment():
             # Install torch first (required by xformers and other deps)
             print("\n📦 Installing PyTorch (this is a large package)...")
             if is_jetson:
+                # Install cuSPARSELt library if needed (required by PyTorch 2.4+)
+                print("\n🔍 Checking for cuSPARSELt library...")
+                _install_jetson_cusparselt()
+
                 jp_index, wheel_url, torch_ver, vision_ver = _jetson_torch_spec()
                 if wheel_url:
                     if jp_index:
@@ -486,15 +589,17 @@ def bootstrap_environment():
 
                     # Check for missing library errors
                     if "libcusparseLt.so" in error_output or "cannot open shared object file" in error_output:
-                        print("⚠️  PyTorch wheel is missing required CUDA libraries.")
-                        print("   This PyTorch version requires libraries not in JetPack 6.0.")
+                        print("❌ PyTorch is missing required CUDA libraries.")
+                        print("   The automatic cuSPARSELt installation may have failed.")
                         print("\n   SOLUTIONS:")
-                        print("   1. Try an older PyTorch wheel (recommended):")
-                        print("      export JETSON_TORCH_WHEEL='https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0-cp310-cp310-linux_aarch64.whl'")
+                        print("   1. Install cuSPARSELt manually (recommended):")
+                        print("      wget https://developer.download.nvidia.com/compute/cusparselt/0.7.1/local_installers/cusparselt-local-tegra-repo-ubuntu2204-0.7.1_1.0-1_arm64.deb")
+                        print("      sudo dpkg -i cusparselt-local-tegra-repo-ubuntu2204-0.7.1_1.0-1_arm64.deb")
+                        print("      sudo cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.7.1/cusparselt-*-keyring.gpg /usr/share/keyrings/")
+                        print("      sudo apt-get update")
+                        print("      sudo apt-get -y install libcusparselt0 libcusparselt-dev")
                         print("      rm -rf venv/.deps_installed && python3 app.py")
-                        print("\n   2. Or install missing CUDA libraries:")
-                        print("      This may require building CUDA libraries from source")
-                        print("\n   3. Or build PyTorch from source for your exact JetPack version")
+                        print("\n   2. Or download from: https://developer.nvidia.com/cusparselt-downloads")
                         print(f"\n   Error details: {error_output[:200]}")
                     else:
                         print("❌ CUDA not available after installing Jetson torch.")
