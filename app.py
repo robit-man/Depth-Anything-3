@@ -12,6 +12,7 @@ import time
 import threading
 import signal
 import platform
+import re
 from pathlib import Path
 
 # ============================================================================
@@ -25,25 +26,46 @@ def _is_jetson():
     except Exception:
         return False
 
-def _jetson_pytorch_index():
-    """
-    Best-effort mapping from JetPack/L4T to NVIDIA's PyTorch wheel index.
-    Override with JETSON_PYTORCH_INDEX if needed.
-    """
-    env_override = os.environ.get("JETSON_PYTORCH_INDEX")
-    if env_override:
-        return env_override
+def _jetson_release_info():
     try:
-        release_info = Path("/etc/nv_tegra_release").read_text()
+        return Path("/etc/nv_tegra_release").read_text()
     except Exception:
         return None
 
-    # JetPack 5.x -> R35, JetPack 6.x -> R36
+def _jetson_torch_spec():
+    """
+    Return (extra_index_url, torch_version, torchvision_version) for Jetson wheels.
+    Environment overrides:
+      JETSON_PYTORCH_INDEX
+      JETSON_TORCH_VERSION
+      JETSON_TORCHVISION_VERSION
+    """
+    env_index = os.environ.get("JETSON_PYTORCH_INDEX")
+    env_torch = os.environ.get("JETSON_TORCH_VERSION")
+    env_vision = os.environ.get("JETSON_TORCHVISION_VERSION")
+
+    release_info = _jetson_release_info() or ""
+
+    # Defaults based on JetPack/L4T (R36 → JP6, R35 → JP5)
+    default_index = None
+    default_torch = None
+    default_vision = None
     if "R36" in release_info or "JP6" in release_info:
-        return "https://developer.download.nvidia.com/compute/redist/jp/v60"
-    if "R35" in release_info or "JP5" in release_info:
-        return "https://developer.download.nvidia.com/compute/redist/jp/v51"
-    return None
+        default_index = "https://developer.download.nvidia.com/compute/redist/jp/v60"
+        # JP6 ships torch 2.3.0 / torchvision 0.18.0
+        default_torch = "2.3.0"
+        default_vision = "0.18.0"
+    elif "R35" in release_info or "JP5" in release_info:
+        default_index = "https://developer.download.nvidia.com/compute/redist/jp/v51"
+        # JP5 ships torch 2.1.0 / torchvision 0.15.2
+        default_torch = "2.1.0"
+        default_vision = "0.15.2"
+
+    return (
+        env_index or default_index,
+        env_torch or default_torch,
+        env_vision or default_vision,
+    )
 
 def bootstrap_environment():
     """Bootstrap virtual environment and install dependencies."""
@@ -152,20 +174,31 @@ def bootstrap_environment():
             print("\n📦 Upgrading pip...")
             subprocess.run([str(venv_pip), "install", "--upgrade", "pip"], check=True)
 
+            # Always upgrade packaging tools; helps resolve correct wheels on Jetson
+            subprocess.run([str(venv_pip), "install", "--upgrade", "setuptools", "wheel"], check=True)
+
             # Install torch first (required by xformers and other deps)
             print("\n📦 Installing PyTorch (this is a large package)...")
             if is_jetson:
-                jp_index = _jetson_pytorch_index()
-                if jp_index:
+                jp_index, torch_ver, vision_ver = _jetson_torch_spec()
+                if jp_index and torch_ver and vision_ver:
                     print(f"   Using Jetson wheel index: {jp_index}")
+                    print(f"   Installing torch=={torch_ver}, torchvision=={vision_ver}")
                     try:
                         subprocess.run(
-                            [str(venv_pip), "install", "--extra-index-url", jp_index, "torch", "torchvision"],
+                            [
+                                str(venv_pip),
+                                "install",
+                                "--extra-index-url",
+                                jp_index,
+                                f"torch=={torch_ver}",
+                                f"torchvision=={vision_ver}",
+                            ],
                             check=True,
                         )
                     except subprocess.CalledProcessError as e:
                         print("❌ Jetson PyTorch install failed.")
-                        print("   Set JETSON_PYTORCH_INDEX to the correct JP repo or install torch manually in venv.")
+                        print("   Set JETSON_PYTORCH_INDEX/JETSON_TORCH_VERSION/JETSON_TORCHVISION_VERSION or install torch manually in venv.")
                         raise
                 else:
                     print("❌ Could not detect JetPack version for PyTorch wheels.")
@@ -256,6 +289,15 @@ import numpy as np
 import torch
 from PIL import Image
 import trimesh
+
+# Enable TF32 where available (Ampere+ → tensor cores) to maximize throughput
+if torch.cuda.is_available():
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
 
 try:
     from depth_anything_3.api import DepthAnything3
