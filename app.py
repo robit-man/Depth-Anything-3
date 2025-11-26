@@ -11,20 +11,51 @@ import json
 import time
 import threading
 import signal
+import platform
 from pathlib import Path
 
 # ============================================================================
 # BOOTSTRAP SECTION - Virtual Environment Setup
 # ============================================================================
 
+def _is_jetson():
+    """Return True if running on a Jetson (aarch64 + nv_tegra_release present)."""
+    try:
+        return platform.machine().lower() == "aarch64" and Path("/etc/nv_tegra_release").exists()
+    except Exception:
+        return False
+
+def _jetson_pytorch_index():
+    """
+    Best-effort mapping from JetPack/L4T to NVIDIA's PyTorch wheel index.
+    Override with JETSON_PYTORCH_INDEX if needed.
+    """
+    env_override = os.environ.get("JETSON_PYTORCH_INDEX")
+    if env_override:
+        return env_override
+    try:
+        release_info = Path("/etc/nv_tegra_release").read_text()
+    except Exception:
+        return None
+
+    # JetPack 5.x -> R35, JetPack 6.x -> R36
+    if "R36" in release_info or "JP6" in release_info:
+        return "https://developer.download.nvidia.com/compute/redist/jp/v60"
+    if "R35" in release_info or "JP5" in release_info:
+        return "https://developer.download.nvidia.com/compute/redist/jp/v51"
+    return None
+
 def bootstrap_environment():
     """Bootstrap virtual environment and install dependencies."""
     base_dir = Path(__file__).parent.absolute()
     venv_dir = base_dir / "venv"
+    is_jetson = _is_jetson()
 
     print("=" * 70)
     print("🚀 Depth Anything 3 - API Server Bootstrap")
     print("=" * 70)
+    if is_jetson:
+        print("ℹ️  Detected Jetson/aarch64 device. Using Jetson-friendly install path.")
 
     # Check if already in venv
     if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
@@ -93,7 +124,26 @@ def bootstrap_environment():
 
             # Install torch first (required by xformers and other deps)
             print("\n📦 Installing PyTorch (this is a large package)...")
-            subprocess.run([str(venv_pip), "install", "torch>=2", "torchvision"], check=True)
+            if is_jetson:
+                jp_index = _jetson_pytorch_index()
+                if jp_index:
+                    print(f"   Using Jetson wheel index: {jp_index}")
+                    try:
+                        subprocess.run(
+                            [str(venv_pip), "install", "--extra-index-url", jp_index, "torch", "torchvision"],
+                            check=True,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        print("❌ Jetson PyTorch install failed.")
+                        print("   Set JETSON_PYTORCH_INDEX to the correct JP repo or install torch manually in venv.")
+                        raise
+                else:
+                    print("❌ Could not detect JetPack version for PyTorch wheels.")
+                    print("   Set JETSON_PYTORCH_INDEX (e.g., https://developer.download.nvidia.com/compute/redist/jp/v60)")
+                    print("   and rerun, or install torch/torchvision manually inside the venv.")
+                    raise SystemExit(1)
+            else:
+                subprocess.run([str(venv_pip), "install", "torch>=2", "torchvision"], check=True)
 
             # Read requirements and filter out xformers (we'll install it separately)
             print("\n📦 Installing core dependencies...")
@@ -114,15 +164,18 @@ def bootstrap_environment():
                         print(f"  ⚠️  Warning: Failed to install {req}, continuing...")
 
             # Try to install xformers (optional, may fail on older GPUs)
-            print("\n📦 Installing xformers (optional)...")
-            print("   ℹ️  If this fails, the app will still work (see README FAQ)")
-            try:
-                subprocess.run([str(venv_pip), "install", "xformers"],
-                             check=True, timeout=300)
-                print("✓ xformers installed successfully")
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                print("⚠️  xformers installation failed or timed out")
-                print("   The application will work without it (with slightly reduced performance)")
+            if is_jetson:
+                print("\nℹ️  Skipping xformers on Jetson (no aarch64 wheels available).")
+            else:
+                print("\n📦 Installing xformers (optional)...")
+                print("   ℹ️  If this fails, the app will still work (see README FAQ)")
+                try:
+                    subprocess.run([str(venv_pip), "install", "xformers"],
+                                 check=True, timeout=300)
+                    print("✓ xformers installed successfully")
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                    print("⚠️  xformers installation failed or timed out")
+                    print("   The application will work without it (with slightly reduced performance)")
 
             # Install the package itself WITHOUT dependencies
             print("\n📦 Installing depth-anything-3 package...")
