@@ -644,28 +644,30 @@ def bootstrap_environment():
 
                 # Verify torchvision imports correctly (check for NMS operator)
                 print("   Verifying torchvision installation...")
-                vision_probe = (
-                    "import sys, torch\\n"
-                    "try:\\n"
-                    " import torchvision\\n"
-                    " from torchvision.ops import nms\\n"
-                    "except Exception as e:\\n"
-                    " print('TORCHVISION_IMPORT_ERROR', type(e).__name__, e)\\n"
-                    " sys.exit(1)\\n"
-                    "torch_mm = '.'.join(torch.__version__.split('.')[:2])\\n"
-                    "vision_mm = '.'.join(torchvision.__version__.split('.')[:2])\\n"
-                    f"expected = '{expected_vision_mm}'\\n"
-                    "if expected and not vision_mm.startswith(expected):\\n"
-                    " print('TORCH_VISION_MISMATCH', torch.__version__, torchvision.__version__, expected)\\n"
-                    " sys.exit(1)\\n"
-                    "try:\\n"
-                    " nms(torch.tensor([[0., 0., 1., 1.]], dtype=torch.float32), torch.tensor([0.5]), 0.5)\\n"
-                    "except Exception as e:\\n"
-                    " print('TORCHVISION_NMS_ERROR', type(e).__name__, e)\\n"
-                    " sys.exit(1)\\n"
-                    "print('TORCHVISION_OK', torch.__version__, torchvision.__version__)\\n"
-                    "sys.exit(0)\\n"
-                )
+                vision_probe = "\n".join([
+                    "import sys, torch, traceback",
+                    "try:",
+                    "    import torchvision",
+                    "    from torchvision.ops import nms",
+                    "except Exception as e:",
+                    "    print('TORCHVISION_IMPORT_ERROR', type(e).__name__, e)",
+                    "    traceback.print_exc()",
+                    "    sys.exit(1)",
+                    "torch_mm = '.'.join(torch.__version__.split('.')[:2])",
+                    "vision_mm = '.'.join(torchvision.__version__.split('.')[:2])",
+                    f"expected = '{expected_vision_mm}'",
+                    "if expected and not vision_mm.startswith(expected):",
+                    "    print('TORCH_VISION_MISMATCH', torch.__version__, torchvision.__version__, expected)",
+                    "    sys.exit(1)",
+                    "try:",
+                    "    nms(torch.tensor([[0., 0., 1., 1.]], dtype=torch.float32), torch.tensor([0.5]), 0.5)",
+                    "except Exception as e:",
+                    "    print('TORCHVISION_NMS_ERROR', type(e).__name__, e)",
+                    "    traceback.print_exc()",
+                    "    sys.exit(1)",
+                    "print('TORCHVISION_OK', torch.__version__, torchvision.__version__)",
+                    "sys.exit(0)",
+                ])
                 vision_res = subprocess.run(
                     [str(venv_python), "-c", vision_probe],
                     capture_output=True,
@@ -1403,12 +1405,13 @@ def process_file():
 
                     # Transform points from camera frame to world frame using extrinsics (assumed world->camera)
                     cam_pose = camera_poses[i] if i < len(camera_poses) else np.eye(4, dtype=np.float32)
+                    cam_to_world = None
                     try:
                         cam_pose = np.array(cam_pose, dtype=np.float32)
                         if cam_pose.shape == (4, 4):
-                            c2w = np.linalg.inv(cam_pose)  # invert to get camera->world
+                            cam_to_world = np.linalg.inv(cam_pose)  # invert to get camera->world
                             homog = np.concatenate([points, np.ones((points.shape[0], 1), dtype=np.float32)], axis=1)
-                            points_world = (c2w @ homog.T).T[:, :3]
+                            points_world = (cam_to_world @ homog.T).T[:, :3]
                         else:
                             points_world = points
                     except Exception:
@@ -1438,7 +1441,8 @@ def process_file():
                             "frame_index": i,
                             "vertices": frame_points.tolist(),
                             "colors": frame_colors.tolist(),
-                            "camera_pose": camera_poses[i].tolist() if i < len(camera_poses) else np.eye(4).tolist(),
+                            # Store camera-to-world so downstream viewers/path use correct orientation
+                            "camera_pose": (cam_to_world.tolist() if cam_to_world is not None else (np.eye(4).tolist())),
                             "intrinsics": ixt.tolist(),
                             "num_points": len(frame_points)
                         }
