@@ -45,3 +45,4 @@ test_main*
 # Generated Files
 *.pem
 config.json
+JETSON_*

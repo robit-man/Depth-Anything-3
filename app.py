@@ -15,7 +15,26 @@ import platform
 import re
 import urllib.request
 from pathlib import Path
-from packaging.version import Version
+
+# Try to import packaging, install if missing (needed for bootstrap)
+try:
+    from packaging.version import Version
+except ImportError:
+    print("📦 Installing packaging module (needed for bootstrap)...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--user", "packaging"], check=False, capture_output=True)
+    try:
+        from packaging.version import Version
+    except ImportError:
+        # Fallback: use a simple version comparison
+        class Version:
+            def __init__(self, v):
+                self.v = tuple(int(x) if x.isdigit() else x for x in v.replace('a', '.').replace('b', '.').replace('rc', '.').split('.'))
+            def __gt__(self, other):
+                return self.v > other.v
+            def __lt__(self, other):
+                return self.v < other.v
+            def __eq__(self, other):
+                return self.v == other.v
 
 # ============================================================================
 # BOOTSTRAP SECTION - Virtual Environment Setup
@@ -124,24 +143,46 @@ def _jetson_torch_spec():
 
     # Fallback to known wheel URLs if scraping failed
     if wheel_url is None:
-        fallback_wheels = [
-            # JP6 (v60) CP310
-            "https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp310-cp310-linux_aarch64.whl",
-            "https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+f70bd71a48.nv24.06.15634931-cp310-cp310-linux_aarch64.whl",
-            # JP5 (v51) CP38/CP39
-            "https://developer.download.nvidia.com/compute/redist/jp/v51/pytorch/torch-2.0.0a0+8aa34602.nv23.03-cp38-cp38-linux_aarch64.whl",
-        ]
-        for url in fallback_wheels:
-            if py_tag in url:
+        # Map of known Jetson PyTorch wheels by Python version and JetPack version
+        fallback_wheels = {
+            "cp312": [
+                # JP6 (v60) - CP312 wheels (check NVIDIA site for availability)
+                ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp312-cp312-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
+            ],
+            "cp311": [
+                # JP6 (v60) - CP311 wheels
+                ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp311-cp311-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
+            ],
+            "cp310": [
+                # JP6 (v60) - CP310 wheels
+                ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp310-cp310-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
+                ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+f70bd71a48.nv24.06.15634931-cp310-cp310-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
+            ],
+            "cp38": [
+                # JP5 (v51) - CP38 wheels
+                ("https://developer.download.nvidia.com/compute/redist/jp/v51/pytorch/torch-2.0.0a0+8aa34602.nv23.03-cp38-cp38-linux_aarch64.whl", "2.0.0", "0.15.2"),
+            ],
+        }
+
+        # Try to find a wheel for the current Python version
+        if py_tag in fallback_wheels:
+            for url, fb_torch_ver, fb_vision_ver in fallback_wheels[py_tag]:
                 wheel_url = url
-                m = re.search(r"torch-([0-9a-zA-Z\\.\\+]+)\\.nv", url)
-                torch_ver = torch_ver or (m.group(1).split("+")[0] if m else None)
+                torch_ver = torch_ver or fb_torch_ver
+                vision_ver = vision_ver or fb_vision_ver
                 index_url = url.rsplit("/pytorch/", 1)[0]
                 print(f"ℹ️  Using fallback Jetson torch wheel: {wheel_url}")
+                print(f"   Fallback torch version: {torch_ver}, torchvision version: {vision_ver}")
                 break
+        else:
+            print(f"⚠️  No fallback wheel available for Python {sys.version_info.major}.{sys.version_info.minor} ({py_tag})")
+            print(f"   Available fallback wheels: {', '.join(fallback_wheels.keys())}")
+            print(f"   You may need to:")
+            print(f"   1. Use a compatible Python version (3.8, 3.10, 3.11)")
+            print(f"   2. Set JETSON_TORCH_WHEEL to a compatible wheel URL")
+            print(f"   3. Build PyTorch from source")
 
-    # Map torch version to a torchvision version (source build) as best-effort
-    vision_ver = env_vision
+    # Map torch version to a torchvision version (source build) as best-effort (only if not already set)
     if vision_ver is None and torch_ver:
         major_minor = ".".join(torch_ver.split(".")[:2])
         # torch 2.4.x -> vision 0.19.x; torch 2.3.x -> vision 0.18.x; torch 2.1.x -> vision 0.15.x
@@ -150,6 +191,7 @@ def _jetson_torch_spec():
             "2.3": "0.18.0",
             "2.2": "0.17.0",
             "2.1": "0.15.2",
+            "2.0": "0.15.2",
         }
         vision_ver = vision_map.get(major_minor, "0.18.0")
 
@@ -171,6 +213,37 @@ def bootstrap_environment():
     if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
         print("✓ Already running in virtual environment")
         return True
+
+    # On Jetson, check Python version compatibility
+    if is_jetson:
+        py_major = sys.version_info.major
+        py_minor = sys.version_info.minor
+        current_py_tag = f"cp{py_major}{py_minor}"
+
+        # JetPack 6.0 typically only has cp310 wheels
+        supported_versions = ["cp310"]
+
+        if current_py_tag not in supported_versions:
+            print(f"\n⚠️  WARNING: Python {py_major}.{py_minor} may not have pre-built PyTorch wheels for Jetson")
+            print(f"   Current Python: {sys.executable}")
+            print(f"   Supported versions: {', '.join([v.replace('cp', 'Python 3.') for v in supported_versions])}")
+
+            # Try to find Python 3.10
+            for py_cmd in ["python3.10", "python3.10-venv"]:
+                try:
+                    result = subprocess.run([py_cmd, "--version"], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        print(f"\n✓ Found compatible Python: {py_cmd}")
+                        print(f"   Please run this script with: {py_cmd} {' '.join(sys.argv)}")
+                        print(f"   Or create a venv manually: {py_cmd} -m venv venv && ./venv/bin/python3 {sys.argv[0]}")
+                        return False
+                except FileNotFoundError:
+                    continue
+
+            print(f"\n❌ Python 3.10 not found on system.")
+            print(f"   Install it with: sudo apt install python3.10 python3.10-venv")
+            print(f"   Then run: python3.10 {sys.argv[0]}")
+            return False
 
     # Create venv if it doesn't exist
     if not venv_dir.exists():
@@ -301,18 +374,25 @@ def bootstrap_environment():
             print("\n📦 Installing PyTorch (this is a large package)...")
             if is_jetson:
                 jp_index, wheel_url, torch_ver, vision_ver = _jetson_torch_spec()
-                if wheel_url and torch_ver and vision_ver:
-                    print(f"   Using Jetson wheel index: {jp_index}")
+                if wheel_url:
+                    if jp_index:
+                        print(f"   Using Jetson wheel index: {jp_index}")
                     print(f"   Installing torch from wheel: {wheel_url}")
+                    if torch_ver:
+                        print(f"   Torch version: {torch_ver}")
+                    if vision_ver:
+                        print(f"   Torchvision version: {vision_ver}")
                     try:
                         subprocess.run(
                             [str(venv_pip), "install", wheel_url],
                             check=True,
                             env=_jetson_cuda_env(),
                         )
+                        print("✓ PyTorch installed successfully")
                     except subprocess.CalledProcessError as e:
-                        print("❌ Jetson PyTorch install failed.")
-                        print("   Set JETSON_TORCH_WHEEL or install torch manually in venv.")
+                        print(f"❌ Jetson PyTorch install failed with error: {e}")
+                        print("   Set JETSON_TORCH_WHEEL to a wheel URL from https://developer.download.nvidia.com/compute/redist/jp/")
+                        print("   or install torch/torchvision manually inside the venv.")
                         raise
                 else:
                     print("❌ Could not find a CUDA torch wheel for Jetson automatically.")
