@@ -13,7 +13,9 @@ import threading
 import signal
 import platform
 import re
+import urllib.request
 from pathlib import Path
+from packaging.version import Version
 
 # ============================================================================
 # BOOTSTRAP SECTION - Virtual Environment Setup
@@ -51,38 +53,77 @@ def _jetson_release_info():
 
 def _jetson_torch_spec():
     """
-    Return (extra_index_url, torch_version, torchvision_version) for Jetson wheels.
+    Return (extra_index_url, torch_wheel_url, torch_version, torchvision_version) for Jetson wheels.
     Environment overrides:
-      JETSON_PYTORCH_INDEX
+      JETSON_PYTORCH_INDEX (base URL, e.g., https://developer.download.nvidia.com/compute/redist/jp/v60)
+      JETSON_TORCH_WHEEL (full wheel URL)
       JETSON_TORCH_VERSION
       JETSON_TORCHVISION_VERSION
     """
     env_index = os.environ.get("JETSON_PYTORCH_INDEX")
+    env_wheel = os.environ.get("JETSON_TORCH_WHEEL")
     env_torch = os.environ.get("JETSON_TORCH_VERSION")
     env_vision = os.environ.get("JETSON_TORCHVISION_VERSION")
 
     release_info = _jetson_release_info() or ""
 
     # Defaults based on JetPack/L4T (R36 → JP6, R35 → JP5)
-    default_index = None
-    default_torch = None
-    default_vision = None
     if "R36" in release_info or "JP6" in release_info:
         default_index = "https://developer.download.nvidia.com/compute/redist/jp/v60"
-        # JP6 ships torch 2.3.0 / torchvision 0.18.0
-        default_torch = "2.3.0"
-        default_vision = "0.18.0"
     elif "R35" in release_info or "JP5" in release_info:
         default_index = "https://developer.download.nvidia.com/compute/redist/jp/v51"
-        # JP5 ships torch 2.1.0 / torchvision 0.15.2
-        default_torch = "2.1.0"
-        default_vision = "0.15.2"
+    else:
+        default_index = None
 
-    return (
-        env_index or default_index,
-        env_torch or default_torch,
-        env_vision or default_vision,
-    )
+    index_url = env_index or default_index
+
+    # If a wheel URL is provided explicitly, use it
+    if env_wheel:
+        wheel_url = env_wheel
+        # Try to infer torch version from wheel name
+        m = re.search(r"torch-([0-9a-zA-Z\\.\\+]+).*\\.whl", wheel_url)
+        torch_ver = env_torch or (m.group(1).split("+")[0] if m else None)
+        return index_url, wheel_url, torch_ver, env_vision
+
+    # Discover the latest torch wheel from the NVIDIA index
+    wheel_url = None
+    torch_ver = None
+    py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if index_url:
+        try:
+            with urllib.request.urlopen(f"{index_url}/pytorch/") as resp:
+                html = resp.read().decode("utf-8", "ignore")
+            pattern = rf'href="(torch-([0-9a-zA-Z\\.\\+]+)\\.nv[^"]*{py_tag}[^"]*linux_aarch64\\.whl)"'
+            candidates = re.findall(pattern, html)
+            best = None
+            for fname, ver in candidates:
+                base_ver = ver.split("+")[0]
+                try:
+                    ver_obj = Version(base_ver)
+                except Exception:
+                    continue
+                if best is None or ver_obj > best[0]:
+                    best = (ver_obj, fname, base_ver)
+            if best:
+                wheel_url = f"{index_url}/pytorch/{best[1]}"
+                torch_ver = best[2]
+        except Exception as e:
+            print(f"⚠️  Could not scrape Jetson torch wheels from {index_url}: {e}")
+
+    # Map torch version to a torchvision version (source build) as best-effort
+    vision_ver = env_vision
+    if vision_ver is None and torch_ver:
+        major_minor = ".".join(torch_ver.split(".")[:2])
+        # torch 2.4.x -> vision 0.19.x; torch 2.3.x -> vision 0.18.x; torch 2.1.x -> vision 0.15.x
+        vision_map = {
+            "2.4": "0.19.0a0",
+            "2.3": "0.18.0",
+            "2.2": "0.17.0",
+            "2.1": "0.15.2",
+        }
+        vision_ver = vision_map.get(major_minor, "0.18.0")
+
+    return index_url, wheel_url, torch_ver, vision_ver
 
 def bootstrap_environment():
     """Bootstrap virtual environment and install dependencies."""
@@ -229,28 +270,19 @@ def bootstrap_environment():
             # Install torch first (required by xformers and other deps)
             print("\n📦 Installing PyTorch (this is a large package)...")
             if is_jetson:
-                jp_index, torch_ver, vision_ver = _jetson_torch_spec()
-                if jp_index and torch_ver and vision_ver:
+                jp_index, wheel_url, torch_ver, vision_ver = _jetson_torch_spec()
+                if wheel_url and torch_ver and vision_ver:
                     print(f"   Using Jetson wheel index: {jp_index}")
-                    print(f"   Installing torch=={torch_ver}, torchvision=={vision_ver}")
+                    print(f"   Installing torch from wheel: {wheel_url}")
                     try:
-                        # Force Jetson repo as primary index so we don't pull CPU wheels from PyPI
                         subprocess.run(
-                            [
-                                str(venv_pip),
-                                "install",
-                                "--index-url",
-                                jp_index,
-                                "--extra-index-url",
-                                "https://pypi.org/simple",
-                                f"torch=={torch_ver}",
-                                f"torchvision=={vision_ver}",
-                            ],
+                            [str(venv_pip), "install", wheel_url],
                             check=True,
+                            env=_jetson_cuda_env(),
                         )
                     except subprocess.CalledProcessError as e:
                         print("❌ Jetson PyTorch install failed.")
-                        print("   Set JETSON_PYTORCH_INDEX/JETSON_TORCH_VERSION/JETSON_TORCHVISION_VERSION or install torch manually in venv.")
+                        print("   Set JETSON_TORCH_WHEEL or install torch manually in venv.")
                         raise
                 else:
                     print("❌ Could not detect JetPack version for PyTorch wheels.")
@@ -262,6 +294,49 @@ def bootstrap_environment():
 
             # Ensure numpy is pinned < 2 after torch install
             subprocess.run([str(venv_pip), "install", "--upgrade", "numpy<2"], check=True)
+
+            # Install torchvision on Jetson (build from source if no wheel)
+            if is_jetson:
+                if vision_ver:
+                    print(f"   Installing torchvision=={vision_ver} from source (no Jetson wheel)")
+                    try:
+                        subprocess.run(
+                            [
+                                str(venv_pip),
+                                "install",
+                                "--no-binary",
+                                ":all:",
+                                f"torchvision=={vision_ver}",
+                            ],
+                            check=True,
+                            env=_jetson_cuda_env(),
+                        )
+                    except subprocess.CalledProcessError:
+                        print("⚠️  Torchvision source install failed. Trying unpinned source install...")
+                        subprocess.run(
+                            [
+                                str(venv_pip),
+                                "install",
+                                "--no-binary",
+                                ":all:",
+                                "torchvision",
+                            ],
+                            check=True,
+                            env=_jetson_cuda_env(),
+                        )
+                else:
+                    print("⚠️  Torchvision version unknown; installing latest from source.")
+                    subprocess.run(
+                        [
+                            str(venv_pip),
+                            "install",
+                            "--no-binary",
+                            ":all:",
+                            "torchvision",
+                        ],
+                        check=True,
+                        env=_jetson_cuda_env(),
+                    )
 
             # Verify CUDA availability on Jetson immediately after torch install
             if is_jetson:
@@ -278,7 +353,10 @@ def bootstrap_environment():
                     env=_jetson_cuda_env(),
                 )
                 if probe_res.returncode != 0:
-                    print("❌ CUDA not available after installing Jetson torch. Check JetPack drivers and wheel index.")
+                    print("❌ CUDA not available after installing Jetson torch.")
+                    print("   This likely means the installed wheel is CPU-only or CUDA drivers are not visible.")
+                    print("   If you overrode versions, set JETSON_TORCH_WHEEL to a CUDA-enabled wheel URL.")
+                    print("   Otherwise, check JetPack/CUDA installation on the device.")
                     print(f"   Probe output: {probe_res.stdout.strip() or probe_res.stderr.strip()}")
                     raise SystemExit(1)
 
