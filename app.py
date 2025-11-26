@@ -168,8 +168,6 @@ def _jetson_torch_spec():
             ],
             "cp310": [
                 # JP6 (v60) - CP310 wheels
-                # Note: PyTorch 2.3.0 is more stable on Jetson than 2.4.0 (fewer missing library issues)
-                ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0-cp310-cp310-linux_aarch64.whl", "2.3.0", "0.18.0"),
                 ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp310-cp310-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
                 ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+f70bd71a48.nv24.06.15634931-cp310-cp310-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
             ],
