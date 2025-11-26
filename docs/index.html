@@ -993,6 +993,17 @@
         };
         let viewerConfig = {...defaultConfig};
 
+        // Pose handling debug/normalization controls
+        const POSE_DEBUG_CONFIG = {
+            // Log the first raw pose returned by /api/video/... with no transforms applied
+            logFirstRawPose: true,
+            rawPoseFrameIndex: 0,       // Frame to sample for the raw pose log
+            // Toggle for ongoing pose diagnostics (normalized pose + forward vectors)
+            enabled: false,
+            drawForwardRay: false,
+            forwardRayLength: 0.35
+        };
+
         // Camera mode tracking
         const CAMERA_MODES = ['ORBIT', 'FLY', 'FPS'];
         const CAMERA_MODE_LABELS = {
@@ -3005,7 +3016,9 @@
                 this.currentCameraHelper = null;     // Helper showing current camera pose
                 this.combinedPointCloudMesh = null;  // Merged point cloud from inference
                 this.combinedPointCloudData = null;
-                this.pathPosesInverted = false;      // Whether we inverted path poses (w2c -> c2w)
+                this.rawPoseLogged = false;          // Guard so we only dump one raw pose
+                this.poseDebugLine = null;           // Optional forward vector debug line
+                this.lastPoseDebugFrame = null;
             }
 
             setCombinedPointCloud(mesh, data) {
@@ -3085,10 +3098,15 @@
                 }
 
                 // Cache pose as camera-to-world (backend already provides c2w)
-                let framePose = this.poseToMatrix(frame.camera_pose);
-                if (framePose && this.pathPosesInverted) {
-                    framePose = framePose.clone().invert();
-                }
+                const shouldLogRawPose = (
+                    POSE_DEBUG_CONFIG.logFirstRawPose &&
+                    !this.rawPoseLogged &&
+                    frameIndex === POSE_DEBUG_CONFIG.rawPoseFrameIndex
+                );
+                const framePose = this.poseToMatrix(frame.camera_pose, {
+                    logRaw: shouldLogRawPose,
+                    frameIndex
+                });
                 frame._c2w_matrix = framePose;
                 frame._c2w = framePose ? framePose.toArray() : frame.camera_pose;
 
@@ -3103,8 +3121,8 @@
                 if (slider) slider.value = frameIndex;
 
                 // Update viewer camera if following mode is enabled
-                if (this.followCamera && frame._c2w && frame.intrinsics) {
-                    this.updateViewerCamera(frame._c2w, frame.intrinsics);
+                if (this.followCamera && frame._c2w_matrix && frame.intrinsics) {
+                    this.updateViewerCamera(frame._c2w_matrix, frame.intrinsics, { frameIndex });
                 }
 
                 // Highlight current camera frustum
@@ -3136,11 +3154,42 @@
                 }
             }
 
-            poseToMatrix(pose) {
+            // Pose normalization: viewer expects camera-to-world, column-major (-Z forward) matrices.
+            // Backend supplies camera-to-world in row-major (numpy tolist); transpose here so the rest of the
+            // viewer can always consume camera-to-world, column-major matrices.
+            poseToMatrix(pose, options = {}) {
                 if (!pose) return null;
-                const m = new THREE.Matrix4();
+                const {
+                    logRaw = false,
+                    frameIndex = null,
+                    alreadyColumnMajor = false
+                } = options;
+
+                if (pose instanceof THREE.Matrix4) {
+                    return pose.clone();
+                }
+
                 const flat = pose.flat ? pose.flat() : [].concat(...pose);
-                m.fromArray(flat);
+                const normalizedFlat = flat.length === 12 ? [...flat, 0, 0, 0, 1] : flat;
+
+                if (logRaw && !this.rawPoseLogged) {
+                    try {
+                        console.log(`[pose-debug] Raw pose from backend (frame ${frameIndex ?? 'n/a'})`, JSON.stringify(pose));
+                        console.log('[pose-debug] Translation assuming row-major [*,3]:', [flat[3], flat[7], flat[11]]);
+                        console.log('[pose-debug] Translation assuming column-major indices 12-14:', [normalizedFlat[12], normalizedFlat[13], normalizedFlat[14]]);
+                    } catch (err) {
+                        console.warn('Failed to log raw pose', err);
+                    }
+                    this.rawPoseLogged = true;
+                }
+
+                // Backend returns camera-to-world poses as row-major (numpy tolist); extrinsics were inverted server-side.
+                // Viewer expects camera-to-world, column-major (-Z forward) for Three.js Matrix4, so transpose only (no invert).
+                const m = new THREE.Matrix4();
+                m.fromArray(normalizedFlat);
+                if (!alreadyColumnMajor) {
+                    m.transpose(); // row-major -> column-major
+                }
                 return m;
             }
 
@@ -3153,17 +3202,24 @@
                     const res = await fetch('/api/video/camera_path');
                     const raw = await res.json();
 
-                    // Convert poses to Matrix4 (assumed camera-to-world from backend)
-                    const poseMats = (raw.poses || raw.c2w_poses || []).map((p) => this.poseToMatrix(p)).filter(Boolean);
+                    const rawPoses = raw.poses || raw.c2w_poses || [];
+                    const poseMats = rawPoses
+                        .map((p, idx) => this.poseToMatrix(p, {
+                            logRaw: POSE_DEBUG_CONFIG.logFirstRawPose && !this.rawPoseLogged && idx === POSE_DEBUG_CONFIG.rawPoseFrameIndex,
+                            frameIndex: idx
+                        }))
+                        .filter(Boolean);
 
-                    // Use provided positions if available; otherwise derive from poses
-                    let positions = (raw.positions || []).map(pos => new THREE.Vector3(...pos));
-                    if (!positions.length && poseMats.length) {
+                    // Derive positions from normalized matrices so the path always matches the actual camera trajectory.
+                    let positions = [];
+                    if (poseMats.length) {
                         positions = poseMats.map((m) => {
                             const v = new THREE.Vector3();
                             v.setFromMatrixPosition(m);
                             return v;
                         });
+                    } else if (raw.positions && raw.positions.length) {
+                        positions = raw.positions.map(pos => new THREE.Vector3(...pos));
                     }
 
                     // Build spline for smooth playback/attachments
@@ -3176,7 +3232,8 @@
                     this.cameraPathData = {
                         ...raw,
                         positions: positions.map(p => [p.x, p.y, p.z]),
-                        c2w_poses: poseMats.map(m => m.toArray())
+                        c2w_poses: poseMats.map(m => m.toArray()),
+                        c2w_matrices: poseMats
                     };
                     return this.cameraPathData;
                 } catch (err) {
@@ -3325,7 +3382,14 @@
                     this.cameraPathLine = new THREE.Line(pathGeometry, pathMaterial);
                     scene.add(this.cameraPathLine);
 
-                    const poses = (data.c2w_poses || data.poses || []).map((p) => this.poseToMatrix(p)).filter(Boolean);
+                    const poseSource = (data.c2w_matrices && data.c2w_matrices.length)
+                        ? data.c2w_matrices
+                        : (data.c2w_poses || data.poses || []);
+                    const poses = poseSource
+                        .map((p) => p instanceof THREE.Matrix4
+                            ? p
+                            : this.poseToMatrix(p, { alreadyColumnMajor: !!data.c2w_poses && !data.c2w_matrices }))
+                        .filter(Boolean);
 
                     // Add camera frustums
                     poses.forEach((pose, index) => {
@@ -3472,9 +3536,11 @@
 
             updateCameraHelper(frame) {
                 if (!frame) return;
-                const c2wMat = frame._c2w_matrix || this.poseToMatrix(frame.camera_pose);
-                const poseForHelper = c2wMat ? c2wMat.toArray() : (frame._c2w || frame.camera_pose);
-                if (!poseForHelper) return;
+                const c2wMat = frame._c2w_matrix
+                    || (frame._c2w ? this.poseToMatrix(frame._c2w, { alreadyColumnMajor: true }) : null)
+                    || this.poseToMatrix(frame.camera_pose);
+                if (!c2wMat) return;
+                const poseForHelper = c2wMat;
                 const helper = this.createCameraFrustum(
                     poseForHelper,
                     frame.frame_index ?? this.currentFrame,
@@ -3520,8 +3586,14 @@
 
                     // Apply current frame's camera
                     const frame = this.frameBuffer.get(this.currentFrame);
-                    if (frame && frame.camera_pose && frame.intrinsics) {
-                        this.updateViewerCamera(frame.camera_pose, frame.intrinsics);
+                    if (frame && frame.intrinsics) {
+                        const pose = frame._c2w_matrix || this.poseToMatrix(frame.camera_pose, {
+                            logRaw: POSE_DEBUG_CONFIG.logFirstRawPose && !this.rawPoseLogged && this.currentFrame === POSE_DEBUG_CONFIG.rawPoseFrameIndex,
+                            frameIndex: frame.frame_index ?? this.currentFrame
+                        });
+                        if (pose) {
+                            this.updateViewerCamera(pose, frame.intrinsics, { frameIndex: frame.frame_index ?? this.currentFrame });
+                        }
                     }
 
                     console.log('Camera attached to path');
@@ -3558,20 +3630,29 @@
                 this.play();
             }
 
-            updateViewerCamera(cameraPose, intrinsics) {
-                // cameraPose is a 4x4 camera-to-world matrix
+            updateViewerCamera(cameraPose, intrinsics, options = {}) {
+                // cameraPose should be camera-to-world, column-major
+                const { frameIndex = null, alreadyColumnMajor = false } = options;
 
-                const poseMatrix = new THREE.Matrix4();
-                const flatPose = cameraPose instanceof THREE.Matrix4
-                    ? cameraPose.elements
-                    : (cameraPose.flat ? cameraPose.flat() : [].concat(...cameraPose));
-                poseMatrix.fromArray(flatPose);
+                let poseMatrix = null;
+                if (cameraPose instanceof THREE.Matrix4) {
+                    poseMatrix = cameraPose.clone();
+                } else {
+                    const flat = cameraPose?.flat ? cameraPose.flat() : [].concat(...(cameraPose || []));
+                    const rowTranslationSum = Math.abs(flat[3] || 0) + Math.abs(flat[7] || 0) + Math.abs(flat[11] || 0);
+                    const colTranslationSum = Math.abs(flat[12] || 0) + Math.abs(flat[13] || 0) + Math.abs(flat[14] || 0);
+                    const treatAsColumnMajor = alreadyColumnMajor || (colTranslationSum > rowTranslationSum && colTranslationSum !== 0);
+                    poseMatrix = this.poseToMatrix(cameraPose, { alreadyColumnMajor: treatAsColumnMajor });
+                }
+                if (!poseMatrix) return;
 
                 // Extract position and rotation directly (already c2w)
                 const position = new THREE.Vector3();
                 const quaternion = new THREE.Quaternion();
                 const scale = new THREE.Vector3();
                 poseMatrix.decompose(position, quaternion, scale);
+
+                this.maybeDebugPose(poseMatrix, position, quaternion, frameIndex);
 
                 // Apply to viewer camera with smooth transition
                 if (this.followCamera) {
@@ -3593,6 +3674,49 @@
                     // Smoothly adjust FOV
                     camera.fov = THREE.MathUtils.lerp(camera.fov, fovDegrees, 0.2);
                     camera.updateProjectionMatrix();
+                }
+            }
+
+            maybeDebugPose(poseMatrix, position, quaternion, frameIndex = null) {
+                if (!POSE_DEBUG_CONFIG.enabled) {
+                    this.disposePoseDebugLine();
+                    return;
+                }
+
+                try {
+                    console.log(`[pose-debug] Normalized c2w (column-major, frame ${frameIndex ?? 'n/a'})`, poseMatrix.elements.slice());
+                    console.log(`[pose-debug] Position (frame ${frameIndex ?? 'n/a'})`, position.toArray());
+                    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion).normalize();
+                    console.log(`[pose-debug] Forward (-Z camera) (frame ${frameIndex ?? 'n/a'})`, forward.toArray());
+
+                    if (POSE_DEBUG_CONFIG.drawForwardRay && scene) {
+                        const start = position.clone();
+                        const end = start.clone().add(forward.multiplyScalar(POSE_DEBUG_CONFIG.forwardRayLength || 0.35));
+                        const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
+                        const material = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.9 });
+                        const line = new THREE.Line(geometry, material);
+                        this.disposePoseDebugLine();
+                        scene.add(line);
+                        this.poseDebugLine = line;
+                    } else {
+                        this.disposePoseDebugLine();
+                    }
+                    this.lastPoseDebugFrame = frameIndex;
+                } catch (err) {
+                    console.warn('Pose debug logging failed:', err);
+                }
+            }
+
+            disposePoseDebugLine() {
+                if (this.poseDebugLine) {
+                    if (scene) {
+                        scene.remove(this.poseDebugLine);
+                    }
+                    if (this.poseDebugLine.geometry) this.poseDebugLine.geometry.dispose();
+                    if (this.poseDebugLine.material && this.poseDebugLine.material.dispose) {
+                        this.poseDebugLine.material.dispose();
+                    }
+                    this.poseDebugLine = null;
                 }
             }
 
@@ -3641,6 +3765,9 @@
                 this.cameraPathData = null;
                 this.cameraSpline = null;
                 this.showFrameOnly = false;
+                this.rawPoseLogged = false;
+                this.lastPoseDebugFrame = null;
+                this.disposePoseDebugLine();
 
                 if (this.currentCameraHelper) {
                     this.disposeFrustum(this.currentCameraHelper);
