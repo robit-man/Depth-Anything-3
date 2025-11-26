@@ -698,6 +698,9 @@
                     <i class="fas fa-repeat"></i>
                 </button>
                 <button onclick="videoPlayer.toggleCameraPath()" id="video-camera-path-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Show Camera Path">
+                    <i class="fas fa-route"></i>
+                </button>
+                <button onclick="videoPlayer.toggleFollowCamera()" id="video-follow-cam-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Follow Camera">
                     <i class="fas fa-video"></i>
                 </button>
                 <span id="frame-counter" style="color: rgba(255,255,255,0.7); font-size: 12px; white-space: nowrap;">0 / 0</span>
@@ -2981,6 +2984,9 @@
                 this.cameraPathLine = null;
                 this.cameraFrustums = [];
                 this.showCameraPath = false;
+                this.followCamera = false;  // NEW: Follow the video camera
+                this.cameraData = null;      // NEW: Store camera poses and intrinsics
+                this.previousCameraState = null;  // NEW: Store user's camera state before following
             }
 
             async loadVideo() {
@@ -3030,6 +3036,16 @@
                 // Update slider
                 const slider = document.getElementById('frame-slider');
                 if (slider) slider.value = frameIndex;
+
+                // Update viewer camera if following mode is enabled
+                if (this.followCamera && frame.camera_pose && frame.intrinsics) {
+                    this.updateViewerCamera(frame.camera_pose, frame.intrinsics);
+                }
+
+                // Highlight current camera frustum
+                if (this.showCameraPath) {
+                    this.highlightCurrentFrustum(frameIndex);
+                }
 
                 // Preload next batch if needed
                 if ((frameIndex + 1) % this.bufferSize === 0) {
@@ -3212,26 +3228,82 @@
             }
 
             createCameraFrustum(poseMatrix, index) {
-                // Create a small pyramid to represent camera
-                const geometry = new THREE.ConeGeometry(0.05, 0.1, 4);
-                geometry.rotateX(Math.PI / 2); // Point along Z axis
+                // Get intrinsics for this frame if available
+                const frame = this.frameBuffer.get(index);
+                let fov = 60; // default FOV in degrees
+                let aspect = 16 / 9; // default aspect ratio
 
-                const material = new THREE.MeshBasicMaterial({
-                    color: 0x00ff00,
-                    wireframe: true,
-                    opacity: 0.6,
-                    transparent: true
+                if (frame && frame.intrinsics) {
+                    // Compute FOV from intrinsics
+                    const fx = frame.intrinsics[0][0];
+                    const fy = frame.intrinsics[1][1];
+                    const cx = frame.intrinsics[0][2];
+                    const cy = frame.intrinsics[1][2];
+
+                    // Image dimensions (approximate from principal point)
+                    const imageWidth = cx * 2;
+                    const imageHeight = cy * 2;
+
+                    // Compute vertical FOV
+                    const fovRadians = 2 * Math.atan(imageHeight / (2 * fy));
+                    fov = THREE.MathUtils.radToDeg(fovRadians);
+                    aspect = imageWidth / imageHeight;
+                }
+
+                // Create frustum geometry based on actual camera parameters
+                const frustumSize = 0.15; // Scale for visibility
+                const near = 0.01;
+                const far = frustumSize;
+
+                // Calculate frustum dimensions at far plane
+                const halfHeight = far * Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+                const halfWidth = halfHeight * aspect;
+
+                // Define frustum vertices
+                const vertices = [
+                    new THREE.Vector3(0, 0, 0),                                 // 0: Camera origin
+                    new THREE.Vector3(-halfWidth, halfHeight, -far),            // 1: Top-left
+                    new THREE.Vector3(halfWidth, halfHeight, -far),             // 2: Top-right
+                    new THREE.Vector3(halfWidth, -halfHeight, -far),            // 3: Bottom-right
+                    new THREE.Vector3(-halfWidth, -halfHeight, -far)            // 4: Bottom-left
+                ];
+
+                // Create edges
+                const edges = [
+                    // Lines from origin to far corners
+                    [0, 1], [0, 2], [0, 3], [0, 4],
+                    // Far plane rectangle
+                    [1, 2], [2, 3], [3, 4], [4, 1]
+                ];
+
+                const frustumLines = new THREE.Group();
+                edges.forEach(([start, end]) => {
+                    const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+                        vertices[start],
+                        vertices[end]
+                    ]);
+                    const lineMaterial = new THREE.LineBasicMaterial({
+                        color: 0x00ff00,
+                        opacity: 0.6,
+                        transparent: true
+                    });
+                    const line = new THREE.Line(lineGeometry, lineMaterial);
+                    frustumLines.add(line);
                 });
-                const frustum = new THREE.Mesh(geometry, material);
 
-                // Apply camera pose
+                // Apply camera pose (convert from extrinsics to Three.js camera space)
                 const matrix = new THREE.Matrix4();
                 const flatMatrix = poseMatrix.flat ? poseMatrix.flat() : [].concat(...poseMatrix);
                 matrix.fromArray(flatMatrix);
-                frustum.applyMatrix4(matrix);
 
-                frustum.userData.frameIndex = index;
-                return frustum;
+                // Invert extrinsics to get camera-to-world
+                const c2w = new THREE.Matrix4().copy(matrix).invert();
+                frustumLines.applyMatrix4(c2w);
+
+                frustumLines.userData.frameIndex = index;
+                frustumLines.userData.isFrustum = true;
+
+                return frustumLines;
             }
 
             clearCameraPath() {
@@ -3250,12 +3322,141 @@
                 this.cameraFrustums = [];
             }
 
+            // ========== NEW CAMERA FOLLOWING FEATURES ==========
+
+            toggleFollowCamera() {
+                this.followCamera = !this.followCamera;
+
+                const btn = document.getElementById('video-follow-cam-btn');
+                if (btn) {
+                    btn.style.background = this.followCamera
+                        ? 'rgba(16, 185, 129, 0.4)'
+                        : 'rgba(16, 185, 129, 0.2)';
+                }
+
+                if (this.followCamera) {
+                    // Save current camera state
+                    this.previousCameraState = {
+                        position: camera.position.clone(),
+                        rotation: camera.rotation.clone()
+                    };
+
+                    // Disable orbit controls when following
+                    if (typeof orbitControls !== 'undefined' && orbitControls) {
+                        orbitControls.enabled = false;
+                    }
+                    if (typeof flyControls !== 'undefined' && flyControls) {
+                        flyControls.enabled = false;
+                    }
+
+                    // Apply current frame's camera
+                    const frame = this.frameBuffer.get(this.currentFrame);
+                    if (frame && frame.camera_pose && frame.intrinsics) {
+                        this.updateViewerCamera(frame.camera_pose, frame.intrinsics);
+                    }
+
+                    console.log('Camera follow: ON');
+                } else {
+                    // Restore previous camera state
+                    if (this.previousCameraState) {
+                        camera.position.copy(this.previousCameraState.position);
+                        camera.rotation.copy(this.previousCameraState.rotation);
+                    }
+
+                    // Re-enable controls
+                    const controlMode = localStorage.getItem('controlMode') || 'orbit';
+                    if (controlMode === 'orbit' && typeof orbitControls !== 'undefined' && orbitControls) {
+                        orbitControls.enabled = true;
+                    } else if (controlMode === 'fly' && typeof flyControls !== 'undefined' && flyControls) {
+                        flyControls.enabled = true;
+                    }
+
+                    console.log('Camera follow: OFF');
+                }
+            }
+
+            updateViewerCamera(cameraPose, intrinsics) {
+                // cameraPose is a 4x4 extrinsics matrix (world-to-camera)
+                // We need to invert it to get camera-to-world for Three.js
+
+                const poseMatrix = new THREE.Matrix4();
+                const flatPose = cameraPose.flat ? cameraPose.flat() : [].concat(...cameraPose);
+                poseMatrix.fromArray(flatPose);
+
+                // Invert to get camera-to-world (Three.js uses C2W)
+                const c2w = new THREE.Matrix4().copy(poseMatrix).invert();
+
+                // Extract position and rotation
+                const position = new THREE.Vector3();
+                const quaternion = new THREE.Quaternion();
+                const scale = new THREE.Vector3();
+                c2w.decompose(position, quaternion, scale);
+
+                // Apply to viewer camera with smooth transition
+                if (this.followCamera) {
+                    camera.position.lerp(position, 0.3);  // Smooth interpolation
+                    camera.quaternion.slerp(quaternion, 0.3);  // Spherical interpolation for rotation
+                } else {
+                    camera.position.copy(position);
+                    camera.quaternion.copy(quaternion);
+                }
+
+                // Update camera FOV based on intrinsics (optional)
+                if (intrinsics && intrinsics.length >= 3) {
+                    // Extract focal length and compute FOV
+                    const fy = intrinsics[1][1];  // Vertical focal length
+                    const imageHeight = 512;  // Approximate, could be from videoInfo
+                    const fovRadians = 2 * Math.atan(imageHeight / (2 * fy));
+                    const fovDegrees = THREE.MathUtils.radToDeg(fovRadians);
+
+                    // Smoothly adjust FOV
+                    camera.fov = THREE.MathUtils.lerp(camera.fov, fovDegrees, 0.2);
+                    camera.updateProjectionMatrix();
+                }
+            }
+
+            highlightCurrentFrustum(frameIndex) {
+                // Reset all frustum colors
+                this.cameraFrustums.forEach((frustum, idx) => {
+                    const isActive = idx === frameIndex;
+                    const color = isActive ? 0xffff00 : 0x00ff00;  // Yellow for active, green for others
+                    const opacity = isActive ? 1.0 : 0.6;
+
+                    // Update all line materials in the frustum group
+                    if (frustum.userData.isFrustum && frustum.children) {
+                        frustum.children.forEach(line => {
+                            if (line.material) {
+                                line.material.color.setHex(color);
+                                line.material.opacity = opacity;
+                            }
+                        });
+                    } else if (frustum.material) {
+                        // Fallback for old-style frustums
+                        frustum.material.color.setHex(color);
+                        frustum.material.opacity = opacity;
+                    }
+                });
+            }
+
             reset() {
                 this.stop();
                 this.clearCameraPath();
                 this.frameBuffer.clear();
                 this.videoInfo = null;
                 this.showCameraPath = false;
+                this.cameraData = null;
+
+                // Disable camera following and restore controls
+                if (this.followCamera) {
+                    this.followCamera = false;
+                    const controlMode = localStorage.getItem('controlMode') || 'orbit';
+                    if (controlMode === 'orbit' && typeof orbitControls !== 'undefined' && orbitControls) {
+                        orbitControls.enabled = true;
+                    } else if (controlMode === 'fly' && typeof flyControls !== 'undefined' && flyControls) {
+                        flyControls.enabled = true;
+                    }
+                }
+
                 document.getElementById('video-controls').style.display = 'none';
             }
         }

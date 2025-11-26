@@ -610,6 +610,7 @@ def bootstrap_environment():
                             "install",
                             "--no-cache-dir",  # Force rebuild
                             "--force-reinstall",  # Force reinstall
+                            "--no-deps",  # Keep the Jetson torch wheel; avoid pulling a CPU torch
                             f"git+https://github.com/pytorch/vision.git@{vision_tag}",
                         ],
                         check=True,
@@ -623,7 +624,7 @@ def bootstrap_environment():
                     # Fallback: try to find any compatible torchvision on PyPI
                     try:
                         subprocess.run(
-                            [str(venv_pip), "install", "torchvision", "--upgrade"],
+                            [str(venv_pip), "install", "torchvision", "--upgrade", "--no-deps"],
                             check=True,
                             env=_jetson_cuda_env(),
                         )
@@ -667,6 +668,7 @@ def bootstrap_environment():
                                 str(venv_pip),
                                 "install",
                                 "--no-cache-dir",
+                                "--no-deps",
                                 f"git+https://github.com/pytorch/vision.git@{vision_tag}",
                             ],
                             check=True,
@@ -678,7 +680,7 @@ def bootstrap_environment():
                         print(f"❌ Failed to rebuild torchvision: {e}")
                         print("   You may need to rebuild manually:")
                         print(f"   pip uninstall -y torchvision")
-                        print(f"   pip install --no-cache-dir git+https://github.com/pytorch/vision.git@{vision_tag}")
+                        print(f"   pip install --no-cache-dir --no-deps git+https://github.com/pytorch/vision.git@{vision_tag}")
                 else:
                     print(f"✓ Torchvision verification passed: {vision_res.stdout.strip()}")
 
