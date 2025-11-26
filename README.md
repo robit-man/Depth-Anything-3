@@ -1,3 +1,21 @@
+# Depth Anything 3 Wrapper and restful endpoints
+
+To evaluate all inclusive single entrypoint service + frontend run:
+```bash
+python3 main.py
+```
+
+To evaluate granular access via standalone frontend and rest-only app.py
+```bash
+python3 app.py
+```
+and in a seperate terminal to host frontend:
+```bash
+python3 server.py
+```
+
+# Below is original README.md content
+
 <div align="center">
 <h1 style="border-bottom: none; margin-bottom: 0px ">Depth Anything 3: Recovering the Visual Space from Any Views</h1>
 <!-- <h2 style="border-top: none; margin-top: 3px;">Recovering the Visual Space from Any Views</h2> -->
