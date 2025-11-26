@@ -11,7 +11,7 @@ python3 app.py
 ```
 and in a seperate terminal to host frontend:
 ```bash
-python3 server.py
+cd docs && python3 server.py
 ```
 
 # Below is original README.md content
