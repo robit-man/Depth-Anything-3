@@ -1,3 +1,4 @@
+addict
 pre-commit
 trimesh
 torch>=2

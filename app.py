@@ -54,8 +54,35 @@ def bootstrap_environment():
     # Check if dependencies are installed
     requirements_file = base_dir / "requirements.txt"
     marker_file = venv_dir / ".deps_installed"
+    reinstall_needed = not marker_file.exists()
 
-    if not marker_file.exists() and requirements_file.exists():
+    # If we previously installed deps but new requirements were added (e.g., addict),
+    # verify the venv still has the critical modules. If not, force a reinstall.
+    if not reinstall_needed and requirements_file.exists():
+        critical_modules = ["addict", "omegaconf", "einops"]
+        check_code = (
+            "import importlib.util, sys; "
+            f"mods = {critical_modules!r}; "
+            "missing = [m for m in mods if importlib.util.find_spec(m) is None]; "
+            "print(','.join(missing)); "
+            "sys.exit(1 if missing else 0)"
+        )
+        result = subprocess.run(
+            [str(venv_python), "-c", check_code],
+            capture_output=True,
+            text=True,
+        )
+        missing = [m for m in result.stdout.strip().split(",") if m]
+        if result.returncode != 0 and missing:
+            print(f"\n⚠️ Detected missing packages in venv: {', '.join(missing)}")
+            print("   Reinstalling requirements to pick up new dependencies...")
+            reinstall_needed = True
+            try:
+                marker_file.unlink()
+            except FileNotFoundError:
+                pass
+
+    if reinstall_needed and requirements_file.exists():
         print("\n📥 Installing dependencies from requirements.txt...")
         print("⏳ This may take several minutes...")
 
