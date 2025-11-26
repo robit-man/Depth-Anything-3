@@ -54,14 +54,26 @@ def _jetson_cuda_env():
     env = os.environ.copy()
     cuda_paths = [
         "/usr/local/cuda/lib64",
+        "/usr/local/cuda-12/lib64",
+        "/usr/local/cuda-12.2/lib64",
+        "/usr/local/cuda-12.4/lib64",
         "/usr/lib/aarch64-linux-gnu",
         "/usr/lib/aarch64-linux-gnu/tegra",
+        "/usr/lib/aarch64-linux-gnu/tegra-egl",
     ]
     ld_path = env.get("LD_LIBRARY_PATH", "")
     for p in cuda_paths:
-        if p not in ld_path:
+        if Path(p).exists() and p not in ld_path:
             ld_path = f"{ld_path}:{p}" if ld_path else p
     env["LD_LIBRARY_PATH"] = ld_path
+
+    # Also set CUDA_HOME if not set
+    if "CUDA_HOME" not in env:
+        for cuda_home in ["/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-12.2", "/usr/local/cuda-12.4"]:
+            if Path(cuda_home).exists():
+                env["CUDA_HOME"] = cuda_home
+                break
+
     return env
 
 def _jetson_release_info():
@@ -156,6 +168,8 @@ def _jetson_torch_spec():
             ],
             "cp310": [
                 # JP6 (v60) - CP310 wheels
+                # Note: PyTorch 2.3.0 is more stable on Jetson than 2.4.0 (fewer missing library issues)
+                ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0-cp310-cp310-linux_aarch64.whl", "2.3.0", "0.18.0"),
                 ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+3bcc3cddb5.nv24.07.16234504-cp310-cp310-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
                 ("https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+f70bd71a48.nv24.06.15634931-cp310-cp310-linux_aarch64.whl", "2.4.0", "0.19.0a0"),
             ],
@@ -470,11 +484,27 @@ def bootstrap_environment():
                     env=_jetson_cuda_env(),
                 )
                 if probe_res.returncode != 0:
-                    print("❌ CUDA not available after installing Jetson torch.")
-                    print("   This likely means the installed wheel is CPU-only or CUDA drivers are not visible.")
-                    print("   If you overrode versions, set JETSON_TORCH_WHEEL to a CUDA-enabled wheel URL.")
-                    print("   Otherwise, check JetPack/CUDA installation on the device.")
-                    print(f"   Probe output: {probe_res.stdout.strip() or probe_res.stderr.strip()}")
+                    error_output = probe_res.stderr.strip() or probe_res.stdout.strip()
+
+                    # Check for missing library errors
+                    if "libcusparseLt.so" in error_output or "cannot open shared object file" in error_output:
+                        print("⚠️  PyTorch wheel is missing required CUDA libraries.")
+                        print("   This PyTorch version requires libraries not in JetPack 6.0.")
+                        print("\n   SOLUTIONS:")
+                        print("   1. Try an older PyTorch wheel (recommended):")
+                        print("      export JETSON_TORCH_WHEEL='https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0-cp310-cp310-linux_aarch64.whl'")
+                        print("      rm -rf venv/.deps_installed && python3 app.py")
+                        print("\n   2. Or install missing CUDA libraries:")
+                        print("      This may require building CUDA libraries from source")
+                        print("\n   3. Or build PyTorch from source for your exact JetPack version")
+                        print(f"\n   Error details: {error_output[:200]}")
+                    else:
+                        print("❌ CUDA not available after installing Jetson torch.")
+                        print("   This likely means the installed wheel is CPU-only or CUDA drivers are not visible.")
+                        print("   If you overrode versions, set JETSON_TORCH_WHEEL to a CUDA-enabled wheel URL.")
+                        print("   Otherwise, check JetPack/CUDA installation on the device.")
+                        print(f"   Probe output: {error_output[:200]}")
+
                     raise SystemExit(1)
 
             # Read requirements and filter out xformers (we'll install it separately)
@@ -708,6 +738,7 @@ class AppState:
         self.downloaded_models = set()
         self.processing_jobs = {}
         self.current_pointcloud = None
+        self.current_video_sequence = None  # Store video frame sequences
         self.lock = threading.Lock()
         self.check_downloaded_models()
 
@@ -1106,10 +1137,16 @@ def process_file():
                 points_list = []
                 colors_list = []
                 conf_list = []
+                frame_data_list = []  # Store per-frame data for video playback
 
                 confidence_maps = None
                 if apply_confidence_filter or include_confidence:
                     confidence_maps = getattr(prediction, "conf", None)
+
+                # Extract camera poses if available (for video sequences)
+                camera_poses = getattr(prediction, "extrinsics", None)
+                if camera_poses is None:
+                    camera_poses = [np.eye(4) for _ in range(len(prediction.depth))]
 
                 for i in range(len(prediction.depth)):
                     depth = prediction.depth[i]
@@ -1144,6 +1181,33 @@ def process_file():
                     if conf_flat is not None:
                         conf_list.append(conf_flat)
 
+                    # Store per-frame data for video sequences
+                    if is_video:
+                        # Downsample points for individual frames if needed
+                        frame_points = points
+                        frame_colors = colors
+                        frame_conf = conf_flat
+
+                        points_per_frame = max_points // len(prediction.depth) if max_points else len(frame_points)
+                        if len(frame_points) > points_per_frame:
+                            indices = np.random.choice(len(frame_points), points_per_frame, replace=False)
+                            frame_points = frame_points[indices]
+                            frame_colors = frame_colors[indices]
+                            if frame_conf is not None:
+                                frame_conf = frame_conf[indices]
+
+                        frame_dict = {
+                            "frame_index": i,
+                            "vertices": frame_points.tolist(),
+                            "colors": frame_colors.tolist(),
+                            "camera_pose": camera_poses[i].tolist() if i < len(camera_poses) else np.eye(4).tolist(),
+                            "intrinsics": ixt.tolist(),
+                            "num_points": len(frame_points)
+                        }
+                        if frame_conf is not None:
+                            frame_dict["confidence"] = frame_conf.tolist()
+                        frame_data_list.append(frame_dict)
+
                 all_points = np.vstack(points_list)
                 all_colors = np.vstack(colors_list)
                 all_conf = np.hstack(conf_list) if conf_list else None
@@ -1168,11 +1232,27 @@ def process_file():
                     "metadata": {
                         "num_points": len(all_points),
                         "resolution": resolution,
-                        "filename": filename
+                        "filename": filename,
+                        "is_video": is_video,
+                        "num_frames": len(frame_data_list) if is_video else 1
                     }
                 }
                 if include_confidence and all_conf is not None:
                     state.current_pointcloud["confidence"] = all_conf.tolist()
+
+                # Store video sequence data separately
+                if is_video and frame_data_list:
+                    state.current_video_sequence = {
+                        "frames": frame_data_list,
+                        "num_frames": len(frame_data_list),
+                        "fps": feat_vis_fps if feat_vis_fps else 15,
+                        "metadata": {
+                            "filename": filename,
+                            "resolution": resolution,
+                            "total_points": len(all_points),
+                            "points_per_frame": [f["num_points"] for f in frame_data_list]
+                        }
+                    }
 
             if state.current_pointcloud and "metadata" in state.current_pointcloud:
                 state.current_pointcloud["metadata"]["config"] = {
@@ -1237,6 +1317,70 @@ def align_floor():
     return jsonify({
         "message": "Floor alignment applied",
         "pointcloud": state.current_pointcloud
+    })
+
+@app.route('/api/video/info', methods=['GET'])
+def get_video_info():
+    """Get information about the current video sequence."""
+    if state.current_video_sequence is None:
+        return jsonify({"error": "No video sequence available"}), 404
+
+    return jsonify({
+        "num_frames": state.current_video_sequence["num_frames"],
+        "fps": state.current_video_sequence["fps"],
+        "metadata": state.current_video_sequence["metadata"]
+    })
+
+@app.route('/api/video/frame/<int:frame_index>', methods=['GET'])
+def get_video_frame(frame_index):
+    """Get a specific frame from the video sequence."""
+    if state.current_video_sequence is None:
+        return jsonify({"error": "No video sequence available"}), 404
+
+    if frame_index < 0 or frame_index >= state.current_video_sequence["num_frames"]:
+        return jsonify({"error": f"Frame index {frame_index} out of range [0, {state.current_video_sequence['num_frames']-1}]"}), 400
+
+    frame_data = state.current_video_sequence["frames"][frame_index]
+    return jsonify(frame_data)
+
+@app.route('/api/video/frames', methods=['GET'])
+def get_all_video_frames():
+    """Get all frames from the video sequence."""
+    if state.current_video_sequence is None:
+        return jsonify({"error": "No video sequence available"}), 404
+
+    # Optional: Support range queries via query params
+    start = request.args.get('start', 0, type=int)
+    end = request.args.get('end', state.current_video_sequence["num_frames"], type=int)
+
+    frames = state.current_video_sequence["frames"][start:end]
+    return jsonify({
+        "frames": frames,
+        "start": start,
+        "end": min(end, state.current_video_sequence["num_frames"]),
+        "total": state.current_video_sequence["num_frames"]
+    })
+
+@app.route('/api/video/camera_path', methods=['GET'])
+def get_camera_path():
+    """Get the camera path for visualization."""
+    if state.current_video_sequence is None:
+        return jsonify({"error": "No video sequence available"}), 404
+
+    camera_poses = [frame["camera_pose"] for frame in state.current_video_sequence["frames"]]
+
+    # Extract camera positions from poses for path visualization
+    camera_positions = []
+    for pose in camera_poses:
+        # pose is 4x4 matrix, position is in the last column
+        pose_array = np.array(pose)
+        position = pose_array[:3, 3].tolist()
+        camera_positions.append(position)
+
+    return jsonify({
+        "poses": camera_poses,
+        "positions": camera_positions,
+        "num_frames": len(camera_poses)
     })
 
 @app.route('/api/export/glb', methods=['GET'])
@@ -1371,6 +1515,10 @@ if __name__ == '__main__':
     print("  • /api/process")
     print("  • /api/job/<job_id>")
     print("  • /api/floor_align")
+    print("  • /api/video/info")
+    print("  • /api/video/frame/<frame_index>")
+    print("  • /api/video/frames")
+    print("  • /api/video/camera_path")
     print("  • /api/export/glb")
     print("  • /api/v1/* aliases")
     print("\n⚠️  Press Ctrl+C to stop the server")

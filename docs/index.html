@@ -682,6 +682,34 @@
 
     <!-- Bottom button bar -->
     <div class="bottom-bar">
+        <!-- Video Controls (hidden by default) -->
+        <div id="video-controls" style="display: none; flex: 1; max-width: 600px; margin-right: 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <button onclick="videoPlayer.play()" id="video-play-btn" style="flex: 0; min-width: 40px; padding: 8px;">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button onclick="videoPlayer.pause()" id="video-pause-btn" style="flex: 0; min-width: 40px; padding: 8px;">
+                    <i class="fas fa-pause"></i>
+                </button>
+                <button onclick="videoPlayer.stop()" id="video-stop-btn" style="flex: 0; min-width: 40px; padding: 8px;">
+                    <i class="fas fa-stop"></i>
+                </button>
+                <button onclick="videoPlayer.toggleLoop()" id="video-loop-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Loop">
+                    <i class="fas fa-repeat"></i>
+                </button>
+                <button onclick="videoPlayer.toggleCameraPath()" id="video-camera-path-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Show Camera Path">
+                    <i class="fas fa-video"></i>
+                </button>
+                <span id="frame-counter" style="color: rgba(255,255,255,0.7); font-size: 12px; white-space: nowrap;">0 / 0</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="frame-slider" min="0" max="0" value="0"
+                       style="flex: 1; accent-color: #3b82f6;"
+                       oninput="videoPlayer.seekToFrame(parseInt(this.value))">
+                <span id="fps-display" style="color: rgba(255,255,255,0.5); font-size: 11px; white-space: nowrap;">15 FPS</span>
+            </div>
+        </div>
+
         <button onclick="exportGLB()" id="export-btn" disabled>
             <i class="fas fa-file-export"></i> <span class="btn-label">Export GLB</span>
         </button>
@@ -2483,6 +2511,20 @@
                 document.getElementById('camera-mode-btn').disabled = false;
                 document.getElementById('reset-btn').disabled = false;
 
+                // Check if this is a video and load video player
+                if (processed.metadata?.is_video) {
+                    console.log('Video detected, loading video player...');
+                    setTimeout(async () => {
+                        const loaded = await videoPlayer.loadVideo();
+                        if (loaded) {
+                            console.log('Video player initialized successfully');
+                        }
+                    }, 500);
+                } else {
+                    // Hide video controls if showing
+                    videoPlayer.reset();
+                }
+
                 // Center camera
                 const box = new THREE.Box3().setFromObject(pointCloud);
                 const center = box.getCenter(new THREE.Vector3());
@@ -2921,6 +2963,307 @@
                 console.log('Manual floor selection click handler registered');
             }
         }
+
+        // ============================================================================
+        // VIDEO PLAYBACK AND CAMERA PATH
+        // ============================================================================
+
+        class VideoPlayer {
+            constructor() {
+                this.currentFrame = 0;
+                this.videoInfo = null;
+                this.isPlaying = false;
+                this.isLooping = true;
+                this.pointCloudMesh = null;
+                this.playbackTimer = null;
+                this.frameBuffer = new Map();
+                this.bufferSize = 5;
+                this.cameraPathLine = null;
+                this.cameraFrustums = [];
+                this.showCameraPath = false;
+            }
+
+            async loadVideo() {
+                try {
+                    const res = await fetch('/api/video/info');
+                    if (!res.ok) {
+                        console.log('No video sequence available');
+                        return false;
+                    }
+
+                    this.videoInfo = await res.json();
+                    console.log('Video loaded:', this.videoInfo);
+
+                    // Update UI
+                    document.getElementById('video-controls').style.display = 'flex';
+                    document.getElementById('frame-slider').max = this.videoInfo.num_frames - 1;
+                    document.getElementById('fps-display').textContent = `${this.videoInfo.fps} FPS`;
+                    this.updateFrameCounter();
+
+                    // Load first frame
+                    await this.loadFrame(0);
+                    return true;
+                } catch (err) {
+                    console.error('Failed to load video:', err);
+                    return false;
+                }
+            }
+
+            async loadFrame(frameIndex) {
+                if (!this.videoInfo) return;
+
+                // Check buffer first
+                if (!this.frameBuffer.has(frameIndex)) {
+                    await this.preloadFrames(frameIndex);
+                }
+
+                const frame = this.frameBuffer.get(frameIndex);
+                if (!frame) {
+                    console.error('Frame not in buffer:', frameIndex);
+                    return;
+                }
+
+                this.currentFrame = frameIndex;
+                this.updatePointCloud(frame.vertices, frame.colors);
+                this.updateFrameCounter();
+
+                // Update slider
+                const slider = document.getElementById('frame-slider');
+                if (slider) slider.value = frameIndex;
+
+                // Preload next batch if needed
+                if ((frameIndex + 1) % this.bufferSize === 0) {
+                    this.preloadFrames(frameIndex + 1);
+                }
+            }
+
+            async preloadFrames(startIndex) {
+                const endIndex = Math.min(
+                    startIndex + this.bufferSize,
+                    this.videoInfo.num_frames
+                );
+
+                try {
+                    const res = await fetch(`/api/video/frames?start=${startIndex}&end=${endIndex}`);
+                    const data = await res.json();
+
+                    data.frames.forEach(frame => {
+                        this.frameBuffer.set(frame.frame_index, frame);
+                    });
+                } catch (err) {
+                    console.error('Failed to preload frames:', err);
+                }
+            }
+
+            updatePointCloud(vertices, colors) {
+                if (!scene) return;
+
+                // Remove old point cloud
+                if (this.pointCloudMesh) {
+                    scene.remove(this.pointCloudMesh);
+                    if (this.pointCloudMesh.geometry) this.pointCloudMesh.geometry.dispose();
+                    if (this.pointCloudMesh.material) this.pointCloudMesh.material.dispose();
+                }
+
+                // Create new point cloud
+                const positions = new Float32Array(vertices.flat());
+                const colorsArray = new Float32Array(colors.flat().map(c => c / 255));
+
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colorsArray, 3));
+
+                const material = new THREE.PointsMaterial({
+                    size: 0.015,
+                    vertexColors: true,
+                    sizeAttenuation: true
+                });
+
+                this.pointCloudMesh = new THREE.Points(geometry, material);
+                scene.add(this.pointCloudMesh);
+
+                // Store in global state
+                if (typeof activePointCloud !== 'undefined') {
+                    activePointCloud = this.pointCloudMesh;
+                }
+            }
+
+            updateFrameCounter() {
+                const counter = document.getElementById('frame-counter');
+                if (counter && this.videoInfo) {
+                    counter.textContent = `${this.currentFrame + 1} / ${this.videoInfo.num_frames}`;
+                }
+            }
+
+            async play() {
+                if (!this.videoInfo || this.isPlaying) return;
+
+                this.isPlaying = true;
+                const frameDelay = 1000 / this.videoInfo.fps;
+
+                const playFrame = async () => {
+                    if (!this.isPlaying) return;
+
+                    await this.loadFrame(this.currentFrame);
+
+                    // Advance to next frame
+                    this.currentFrame++;
+                    if (this.currentFrame >= this.videoInfo.num_frames) {
+                        if (this.isLooping) {
+                            this.currentFrame = 0;
+                        } else {
+                            this.pause();
+                            return;
+                        }
+                    }
+
+                    this.playbackTimer = setTimeout(playFrame, frameDelay);
+                };
+
+                playFrame();
+                console.log('Video playback started');
+            }
+
+            pause() {
+                this.isPlaying = false;
+                if (this.playbackTimer) {
+                    clearTimeout(this.playbackTimer);
+                    this.playbackTimer = null;
+                }
+                console.log('Video playback paused');
+            }
+
+            stop() {
+                this.pause();
+                this.currentFrame = 0;
+                if (this.videoInfo) {
+                    this.loadFrame(0);
+                }
+                console.log('Video playback stopped');
+            }
+
+            seekToFrame(frameIndex) {
+                const wasPlaying = this.isPlaying;
+                this.pause();
+                this.loadFrame(frameIndex);
+                if (wasPlaying) {
+                    this.play();
+                }
+            }
+
+            toggleLoop() {
+                this.isLooping = !this.isLooping;
+                const btn = document.getElementById('video-loop-btn');
+                if (btn) {
+                    btn.style.background = this.isLooping
+                        ? 'rgba(16, 185, 129, 0.4)'
+                        : 'rgba(16, 185, 129, 0.2)';
+                }
+                console.log('Loop:', this.isLooping ? 'ON' : 'OFF');
+            }
+
+            async toggleCameraPath() {
+                this.showCameraPath = !this.showCameraPath;
+
+                const btn = document.getElementById('video-camera-path-btn');
+                if (btn) {
+                    btn.style.background = this.showCameraPath
+                        ? 'rgba(16, 185, 129, 0.4)'
+                        : 'rgba(16, 185, 129, 0.2)';
+                }
+
+                if (this.showCameraPath) {
+                    await this.loadAndDisplayCameraPath();
+                } else {
+                    this.clearCameraPath();
+                }
+            }
+
+            async loadAndDisplayCameraPath() {
+                try {
+                    const res = await fetch('/api/video/camera_path');
+                    const data = await res.json();
+
+                    this.clearCameraPath();
+
+                    // Draw camera path line
+                    const pathPoints = data.positions.map(pos => new THREE.Vector3(...pos));
+                    const pathGeometry = new THREE.BufferGeometry().setFromPoints(pathPoints);
+                    const pathMaterial = new THREE.LineBasicMaterial({
+                        color: 0xff0000,
+                        linewidth: 2,
+                        opacity: 0.8,
+                        transparent: true
+                    });
+                    this.cameraPathLine = new THREE.Line(pathGeometry, pathMaterial);
+                    scene.add(this.cameraPathLine);
+
+                    // Add camera frustums
+                    data.poses.forEach((pose, index) => {
+                        const frustum = this.createCameraFrustum(pose, index);
+                        this.cameraFrustums.push(frustum);
+                        scene.add(frustum);
+                    });
+
+                    console.log('Camera path displayed with', data.num_frames, 'poses');
+                } catch (err) {
+                    console.error('Failed to load camera path:', err);
+                }
+            }
+
+            createCameraFrustum(poseMatrix, index) {
+                // Create a small pyramid to represent camera
+                const geometry = new THREE.ConeGeometry(0.05, 0.1, 4);
+                geometry.rotateX(Math.PI / 2); // Point along Z axis
+
+                const material = new THREE.MeshBasicMaterial({
+                    color: 0x00ff00,
+                    wireframe: true,
+                    opacity: 0.6,
+                    transparent: true
+                });
+                const frustum = new THREE.Mesh(geometry, material);
+
+                // Apply camera pose
+                const matrix = new THREE.Matrix4();
+                const flatMatrix = poseMatrix.flat ? poseMatrix.flat() : [].concat(...poseMatrix);
+                matrix.fromArray(flatMatrix);
+                frustum.applyMatrix4(matrix);
+
+                frustum.userData.frameIndex = index;
+                return frustum;
+            }
+
+            clearCameraPath() {
+                if (this.cameraPathLine) {
+                    scene.remove(this.cameraPathLine);
+                    if (this.cameraPathLine.geometry) this.cameraPathLine.geometry.dispose();
+                    if (this.cameraPathLine.material) this.cameraPathLine.material.dispose();
+                    this.cameraPathLine = null;
+                }
+
+                this.cameraFrustums.forEach(frustum => {
+                    scene.remove(frustum);
+                    if (frustum.geometry) frustum.geometry.dispose();
+                    if (frustum.material) frustum.material.dispose();
+                });
+                this.cameraFrustums = [];
+            }
+
+            reset() {
+                this.stop();
+                this.clearCameraPath();
+                this.frameBuffer.clear();
+                this.videoInfo = null;
+                this.showCameraPath = false;
+                document.getElementById('video-controls').style.display = 'none';
+            }
+        }
+
+        // Global video player instance
+        const videoPlayer = new VideoPlayer();
+
+        // ============================================================================
 
         // Initialize on load
         window.addEventListener('DOMContentLoaded', async () => {
