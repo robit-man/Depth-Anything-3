@@ -87,6 +87,15 @@ def bootstrap_environment():
     marker_file = venv_dir / ".deps_installed"
     reinstall_needed = not marker_file.exists()
 
+    def _mark_reinstall(reason: str):
+        nonlocal reinstall_needed
+        reinstall_needed = True
+        print(reason)
+        try:
+            marker_file.unlink()
+        except FileNotFoundError:
+            pass
+
     # If we previously installed deps but new requirements were added (e.g., addict),
     # verify the venv still has the critical modules. If not, force a reinstall.
     if not reinstall_needed and requirements_file.exists():
@@ -105,13 +114,34 @@ def bootstrap_environment():
         )
         missing = [m for m in result.stdout.strip().split(",") if m]
         if result.returncode != 0 and missing:
-            print(f"\n⚠️ Detected missing packages in venv: {', '.join(missing)}")
-            print("   Reinstalling requirements to pick up new dependencies...")
-            reinstall_needed = True
-            try:
-                marker_file.unlink()
-            except FileNotFoundError:
-                pass
+            _mark_reinstall(f"\n⚠️ Detected missing packages in venv: {', '.join(missing)}\n   Reinstalling requirements to pick up new dependencies...")
+
+    # On Jetson, ensure the installed torch actually reports CUDA available; if not, force reinstall
+    if not reinstall_needed and is_jetson:
+        torch_check = (
+            "import sys\n"
+            "try:\n"
+            " import torch\n"
+            " ok = torch.cuda.is_available()\n"
+            " print('TORCH_VERSION', torch.__version__)\n"
+            " print('CUDA_AVAILABLE', ok)\n"
+            " sys.exit(0 if ok else 1)\n"
+            "except Exception as e:\n"
+            " print('ERR', e)\n"
+            " sys.exit(2)\n"
+        )
+        tc_res = subprocess.run(
+            [str(venv_python), "-c", torch_check],
+            capture_output=True,
+            text=True,
+        )
+        if tc_res.returncode != 0:
+            output = tc_res.stdout.strip() or tc_res.stderr.strip()
+            _mark_reinstall(
+                "\n⚠️ Detected a Jetson without a CUDA-enabled torch in the venv."
+                f"\n   torch check output: {output or 'n/a'}"
+                "\n   Will reinstall torch from the Jetson wheel index."
+            )
 
     if reinstall_needed and requirements_file.exists():
         print("\n📥 Installing dependencies from requirements.txt...")
