@@ -107,6 +107,7 @@ def _jetson_torch_spec():
     index_url = None
     wheel_url = None
     torch_ver = env_torch
+    vision_ver = env_vision
     py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
 
     # If a wheel URL is provided explicitly, use it
@@ -115,7 +116,7 @@ def _jetson_torch_spec():
         # Try to infer torch version from wheel name
         m = re.search(r"torch-([0-9a-zA-Z\\.\\+]+).*\\.whl", wheel_url)
         torch_ver = env_torch or (m.group(1).split("+")[0] if m else None)
-        return index_url, wheel_url, torch_ver, env_vision
+        return index_url, wheel_url, torch_ver, vision_ver
 
     # Discover the latest torch wheel from the NVIDIA index (try candidates in order)
     for idx in candidates:
