@@ -67,15 +67,28 @@ def _jetson_torch_spec():
 
     release_info = _jetson_release_info() or ""
 
-    # Defaults based on JetPack/L4T (R36 → JP6, R35 → JP5)
-    if "R36" in release_info or "JP6" in release_info:
-        default_index = "https://developer.download.nvidia.com/compute/redist/jp/v60"
-    elif "R35" in release_info or "JP5" in release_info:
-        default_index = "https://developer.download.nvidia.com/compute/redist/jp/v51"
+    # Candidate indexes (env override > derived > common fallbacks)
+    candidates = []
+    if env_index:
+        candidates.append(env_index.rstrip("/"))
     else:
-        default_index = None
+        if "R36" in release_info or "JP6" in release_info:
+            candidates.append("https://developer.download.nvidia.com/compute/redist/jp/v60")
+        if "R35" in release_info or "JP5" in release_info:
+            candidates.append("https://developer.download.nvidia.com/compute/redist/jp/v51")
+    # Always add common fallbacks if nothing derived
+    if not candidates:
+        candidates.extend(
+            [
+                "https://developer.download.nvidia.com/compute/redist/jp/v60",
+                "https://developer.download.nvidia.com/compute/redist/jp/v51",
+            ]
+        )
 
-    index_url = env_index or default_index
+    index_url = None
+    wheel_url = None
+    torch_ver = env_torch
+    py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
 
     # If a wheel URL is provided explicitly, use it
     if env_wheel:
@@ -85,18 +98,15 @@ def _jetson_torch_spec():
         torch_ver = env_torch or (m.group(1).split("+")[0] if m else None)
         return index_url, wheel_url, torch_ver, env_vision
 
-    # Discover the latest torch wheel from the NVIDIA index
-    wheel_url = None
-    torch_ver = None
-    py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-    if index_url:
+    # Discover the latest torch wheel from the NVIDIA index (try candidates in order)
+    for idx in candidates:
         try:
-            with urllib.request.urlopen(f"{index_url}/pytorch/") as resp:
+            with urllib.request.urlopen(f"{idx}/pytorch/") as resp:
                 html = resp.read().decode("utf-8", "ignore")
             pattern = rf'href="(torch-([0-9a-zA-Z\\.\\+]+)\\.nv[^"]*{py_tag}[^"]*linux_aarch64\\.whl)"'
-            candidates = re.findall(pattern, html)
+            matches = re.findall(pattern, html)
             best = None
-            for fname, ver in candidates:
+            for fname, ver in matches:
                 base_ver = ver.split("+")[0]
                 try:
                     ver_obj = Version(base_ver)
@@ -105,10 +115,12 @@ def _jetson_torch_spec():
                 if best is None or ver_obj > best[0]:
                     best = (ver_obj, fname, base_ver)
             if best:
-                wheel_url = f"{index_url}/pytorch/{best[1]}"
-                torch_ver = best[2]
+                index_url = idx
+                wheel_url = f"{idx}/pytorch/{best[1]}"
+                torch_ver = torch_ver or best[2]
+                break
         except Exception as e:
-            print(f"⚠️  Could not scrape Jetson torch wheels from {index_url}: {e}")
+            print(f"⚠️  Could not scrape Jetson torch wheels from {idx}: {e}")
 
     # Map torch version to a torchvision version (source build) as best-effort
     vision_ver = env_vision
@@ -285,9 +297,9 @@ def bootstrap_environment():
                         print("   Set JETSON_TORCH_WHEEL or install torch manually in venv.")
                         raise
                 else:
-                    print("❌ Could not detect JetPack version for PyTorch wheels.")
-                    print("   Set JETSON_PYTORCH_INDEX (e.g., https://developer.download.nvidia.com/compute/redist/jp/v60)")
-                    print("   and rerun, or install torch/torchvision manually inside the venv.")
+                    print("❌ Could not find a CUDA torch wheel for Jetson automatically.")
+                    print("   Set JETSON_TORCH_WHEEL to a wheel URL from https://developer.download.nvidia.com/compute/redist/jp/")
+                    print("   or install torch/torchvision manually inside the venv.")
                     raise SystemExit(1)
             else:
                 subprocess.run([str(venv_pip), "install", "torch>=2", "torchvision"], check=True)
