@@ -406,48 +406,54 @@ def bootstrap_environment():
             # Ensure numpy is pinned < 2 after torch install
             subprocess.run([str(venv_pip), "install", "--upgrade", "numpy<2"], check=True)
 
-            # Install torchvision on Jetson (build from source if no wheel)
+            # Install torchvision on Jetson (build from source - no aarch64 wheels available)
             if is_jetson:
-                if vision_ver:
-                    print(f"   Installing torchvision=={vision_ver} from source (no Jetson wheel)")
-                    try:
-                        subprocess.run(
-                            [
-                                str(venv_pip),
-                                "install",
-                                "--no-binary",
-                                ":all:",
-                                f"torchvision=={vision_ver}",
-                            ],
-                            check=True,
-                            env=_jetson_cuda_env(),
-                        )
-                    except subprocess.CalledProcessError:
-                        print("⚠️  Torchvision source install failed. Trying unpinned source install...")
-                        subprocess.run(
-                            [
-                                str(venv_pip),
-                                "install",
-                                "--no-binary",
-                                ":all:",
-                                "torchvision",
-                            ],
-                            check=True,
-                            env=_jetson_cuda_env(),
-                        )
-                else:
-                    print("⚠️  Torchvision version unknown; installing latest from source.")
+                # First, uninstall any existing incompatible torchvision
+                subprocess.run([str(venv_pip), "uninstall", "-y", "torchvision"], check=False, capture_output=True)
+
+                # Determine the correct torchvision branch/tag for the torch version
+                torch_major_minor = torch_ver.split(".")[:2] if torch_ver else ["2", "4"]
+                vision_branch_map = {
+                    ("2", "4"): "v0.19.0",
+                    ("2", "3"): "v0.18.0",
+                    ("2", "2"): "v0.17.0",
+                    ("2", "1"): "v0.16.0",
+                    ("2", "0"): "v0.15.2",
+                }
+                vision_tag = vision_branch_map.get(tuple(torch_major_minor), "v0.19.0")
+
+                print(f"   Installing torchvision from source (tag {vision_tag}, compatible with torch {torch_ver})")
+                print(f"   ⚠️  This may take 15-30 minutes on Jetson. Please be patient...")
+
+                try:
+                    # Install torchvision from GitHub source at the correct tag
                     subprocess.run(
                         [
                             str(venv_pip),
                             "install",
-                            "--no-binary",
-                            ":all:",
-                            "torchvision",
+                            f"git+https://github.com/pytorch/vision.git@{vision_tag}",
                         ],
                         check=True,
                         env=_jetson_cuda_env(),
+                        timeout=3600,  # 1 hour timeout for building
                     )
+                    print("✓ Torchvision installed successfully from source")
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠️  Torchvision build from source failed: {e}")
+                    print("   Trying to install latest compatible version from PyPI...")
+                    # Fallback: try to find any compatible torchvision on PyPI
+                    try:
+                        subprocess.run(
+                            [str(venv_pip), "install", "torchvision", "--upgrade"],
+                            check=True,
+                            env=_jetson_cuda_env(),
+                        )
+                    except subprocess.CalledProcessError:
+                        print("❌ Could not install torchvision. You may need to build it manually.")
+                        print("   See: https://github.com/pytorch/vision#installation")
+                except subprocess.TimeoutExpired:
+                    print("⚠️  Torchvision build timed out after 1 hour")
+                    print("   You may need to build it manually with more resources")
 
             # Verify CUDA availability on Jetson immediately after torch install
             if is_jetson:
