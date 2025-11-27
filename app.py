@@ -257,10 +257,13 @@ def _jetson_system_diagnostics():
     # Parse Jetson release info
     release_text = _jetson_release_info() or ""
     if release_text:
-        # Extract revision (e.g., R36)
+        # Extract revision (e.g., R36 -> JP6, R35 -> JP5)
         rev_match = re.search(r"R(\d+)", release_text)
         if rev_match:
-            info["jetpack_version"] = f"JP{rev_match.group(1)[0]}.x"
+            r_version = int(rev_match.group(1))
+            # Map R36 -> JP6, R35 -> JP5, etc.
+            jp_version = r_version - 30  # R36->6, R35->5, R34->4
+            info["jetpack_version"] = f"JP{jp_version}.x"
 
     # Query dpkg for nvidia packages
     try:
@@ -421,27 +424,23 @@ def _rebuild_torchvision_jetson(venv_python, venv_pip, torch_version, cuda_env):
         capture_output=True
     )
 
-    # Install Python build dependencies
+    # Install Python build dependencies (including numpy for build)
     print("   Installing Python build tools...")
     try:
         subprocess.run(
-            [str(venv_pip), "install", "--upgrade", "setuptools", "wheel", "ninja"],
+            [str(venv_pip), "install", "--upgrade", "setuptools", "wheel", "ninja", "numpy"],
             check=True,
-            capture_output=True
+            capture_output=True,
+            env=cuda_env
         )
     except subprocess.CalledProcessError as e:
         print(f"⚠️  Failed to install build tools: {e}")
         return False
 
-    # Uninstall existing torchvision
-    print("   Uninstalling existing torchvision...")
-    subprocess.run(
-        [str(venv_pip), "uninstall", "-y", "torchvision"],
-        check=False,
-        capture_output=True
-    )
+    # DON'T uninstall torchvision yet - only if build succeeds
+    # This prevents leaving the system with no torchvision at all
 
-    # Set up build environment
+    # Set up build environment with all necessary variables
     build_env = cuda_env.copy() if cuda_env else os.environ.copy()
     build_env.update({
         "CUDA_HOME": cuda_home,
@@ -452,9 +451,10 @@ def _rebuild_torchvision_jetson(venv_python, venv_pip, torch_version, cuda_env):
 
     # Build and install torchvision
     print(f"   Building torchvision from {vision_tag}...")
-    print("   (This will take 15-30 minutes - progress will not be shown)")
+    print("   (This will take 15-30 minutes - output will be shown)")
 
     try:
+        # Use --no-build-isolation to ensure our CUDA_HOME is visible to the build
         result = subprocess.run(
             [
                 str(venv_pip),
@@ -462,6 +462,7 @@ def _rebuild_torchvision_jetson(venv_python, venv_pip, torch_version, cuda_env):
                 "--no-cache-dir",
                 "--force-reinstall",
                 "--no-deps",
+                "--no-build-isolation",  # Critical: allows CUDA_HOME and FORCE_CUDA to be seen
                 f"git+https://github.com/pytorch/vision.git@{vision_tag}",
             ],
             env=build_env,
@@ -881,8 +882,33 @@ def bootstrap_environment():
                         capture_output=True
                     )
 
+                    # Install build tools (including numpy which is needed during build)
+                    print("   Installing Python build tools...")
+                    subprocess.run(
+                        [str(venv_pip), "install", "--upgrade", "setuptools", "wheel", "ninja", "numpy"],
+                        check=False,
+                        capture_output=True,
+                        env=_jetson_cuda_env()
+                    )
+
+                    # Find CUDA home for build environment
+                    cuda_home = None
+                    for candidate in ["/usr/local/cuda-12.2", "/usr/local/cuda-12", "/usr/local/cuda"]:
+                        if Path(candidate).exists():
+                            cuda_home = candidate
+                            break
+
+                    # Set up build environment
+                    build_env = _jetson_cuda_env()
+                    if cuda_home:
+                        build_env["CUDA_HOME"] = cuda_home
+                        build_env["FORCE_CUDA"] = "1"
+                        build_env["TORCH_CUDA_ARCH_LIST"] = "8.7"
+                        build_env["MAX_JOBS"] = "4"
+                        print(f"   Using CUDA_HOME: {cuda_home}")
+
                     # Install torchvision from GitHub source at the correct tag
-                    # Force reinstall to ensure CUDA operators are compiled correctly
+                    # Use --no-build-isolation to ensure CUDA_HOME is visible
                     subprocess.run(
                         [
                             str(venv_pip),
@@ -890,10 +916,11 @@ def bootstrap_environment():
                             "--no-cache-dir",  # Force rebuild
                             "--force-reinstall",  # Force reinstall
                             "--no-deps",  # Keep the Jetson torch wheel; avoid pulling a CPU torch
+                            "--no-build-isolation",  # Critical: allows CUDA_HOME to be seen
                             f"git+https://github.com/pytorch/vision.git@{vision_tag}",
                         ],
                         check=True,
-                        env=_jetson_cuda_env(),
+                        env=build_env,
                         timeout=3600,  # 1 hour timeout for building
                     )
                     print("✓ Torchvision installed successfully from source")
