@@ -3667,17 +3667,50 @@
                         return;
                     }
 
-                    console.log('📹 Camera positions (first 3):',
-                        keyframePositions.slice(0, 3).map(p =>
-                            `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`
-                        ).join(', ')
+                    console.group('📹 Camera Path Analysis');
+                    console.log('Total keyframes:', keyframePositions.length);
+                    console.log('First position (should be ~origin):',
+                        `(${keyframePositions[0].x.toFixed(3)}, ${keyframePositions[0].y.toFixed(3)}, ${keyframePositions[0].z.toFixed(3)})`
                     );
+                    if (keyframePositions.length > 1) {
+                        console.log('Last position:',
+                            `(${keyframePositions[keyframePositions.length-1].x.toFixed(3)}, ${keyframePositions[keyframePositions.length-1].y.toFixed(3)}, ${keyframePositions[keyframePositions.length-1].z.toFixed(3)})`
+                        );
+
+                        // Calculate path statistics
+                        const distances = [];
+                        for (let i = 1; i < keyframePositions.length; i++) {
+                            const dist = keyframePositions[i].distanceTo(keyframePositions[i-1]);
+                            distances.push(dist);
+                        }
+                        const totalDistance = distances.reduce((a, b) => a + b, 0);
+                        const avgStepDistance = totalDistance / distances.length;
+
+                        console.log(`Path length: ${totalDistance.toFixed(2)} meters (assuming 1 unit = 1 meter)`);
+                        console.log(`Average step: ${avgStepDistance.toFixed(3)} meters`);
+                        console.log(`Direction from start to end:`, (() => {
+                            const dir = new THREE.Vector3().subVectors(
+                                keyframePositions[keyframePositions.length-1],
+                                keyframePositions[0]
+                            ).normalize();
+                            return `(${dir.x.toFixed(2)}, ${dir.y.toFixed(2)}, ${dir.z.toFixed(2)})`;
+                        })());
+                    }
+                    console.groupEnd();
 
                     // Validate positions
+                    const firstPosDistance = keyframePositions[0].length();
+                    if (firstPosDistance > 0.1) {
+                        console.warn(`⚠️ First camera position is NOT at origin: ${firstPosDistance.toFixed(3)} units away`);
+                        console.log('Note: DA3 normalizes so first frame should be at ~(0,0,0)');
+                    }
+
                     const allAtOrigin = keyframePositions.every(p => p.length() < 0.001);
                     if (allAtOrigin) {
                         console.error('❌ All camera positions are at origin! Check pose inversion.');
-                        return;
+                        console.error('⚠️  WARNING: Attempting to visualize anyway - this may show nothing or unexpected results');
+                        // DON'T return early - let the visualization attempt to render
+                        // This helps debug what's actually being received from backend
                     }
 
                     // ========== CREATE SMOOTH SPLINE PATH ==========
@@ -3848,6 +3881,81 @@
 
                         console.log('✅ Added start/end markers (cyan/magenta)');
                     }
+
+                    // ========== ADD COORDINATE AXES AT ORIGIN ==========
+                    // Add XYZ axes to show world coordinate system
+                    // This helps understand camera path orientation
+                    const axesGroup = new THREE.Group();
+
+                    // X axis (Red) - Right
+                    const xAxisGeom = new THREE.BufferGeometry().setFromPoints([
+                        new THREE.Vector3(0, 0, 0),
+                        new THREE.Vector3(1, 0, 0)
+                    ]);
+                    const xAxisMat = new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 3 });
+                    const xAxis = new THREE.Line(xAxisGeom, xAxisMat);
+                    axesGroup.add(xAxis);
+
+                    // Add arrow cone at end of X axis
+                    const xCone = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.02, 0.08, 8),
+                        new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                    );
+                    xCone.position.set(1, 0, 0);
+                    xCone.rotation.z = -Math.PI / 2;
+                    axesGroup.add(xCone);
+
+                    // Y axis (Green) - Up
+                    const yAxisGeom = new THREE.BufferGeometry().setFromPoints([
+                        new THREE.Vector3(0, 0, 0),
+                        new THREE.Vector3(0, 1, 0)
+                    ]);
+                    const yAxisMat = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 3 });
+                    const yAxis = new THREE.Line(yAxisGeom, yAxisMat);
+                    axesGroup.add(yAxis);
+
+                    // Add arrow cone at end of Y axis
+                    const yCone = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.02, 0.08, 8),
+                        new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+                    );
+                    yCone.position.set(0, 1, 0);
+                    axesGroup.add(yCone);
+
+                    // Z axis (Blue) - Forward (in world space)
+                    const zAxisGeom = new THREE.BufferGeometry().setFromPoints([
+                        new THREE.Vector3(0, 0, 0),
+                        new THREE.Vector3(0, 0, 1)
+                    ]);
+                    const zAxisMat = new THREE.LineBasicMaterial({ color: 0x0000ff, linewidth: 3 });
+                    const zAxis = new THREE.Line(zAxisGeom, zAxisMat);
+                    axesGroup.add(zAxis);
+
+                    // Add arrow cone at end of Z axis
+                    const zCone = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.02, 0.08, 8),
+                        new THREE.MeshBasicMaterial({ color: 0x0000ff })
+                    );
+                    zCone.position.set(0, 0, 1);
+                    zCone.rotation.x = Math.PI / 2;
+                    axesGroup.add(zCone);
+
+                    // Add axis labels
+                    // Position axes at first camera position (normalized origin)
+                    axesGroup.position.copy(keyframePositions[0]);
+
+                    this.cameraPathLine.add(axesGroup);
+                    console.log('✅ Added world coordinate axes at origin (X=Red, Y=Green, Z=Blue)');
+
+                    // ========== ADD REFERENCE GRID ==========
+                    // Add a grid on the XZ plane to show scale (1 unit = 1 meter)
+                    const gridSize = 10;
+                    const gridDivisions = 10;
+                    const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0x444444, 0x222222);
+                    // Position grid at first camera Y position
+                    gridHelper.position.y = keyframePositions[0].y;
+                    this.cameraPathLine.add(gridHelper);
+                    console.log('✅ Added reference grid (10m × 10m, 1m spacing)');
 
                     // ========== ADD ANIMATED PROGRESS MARKER ==========
                     // Create a glowing sphere that moves along the path during playback

@@ -230,6 +230,259 @@ def _jetson_release_info():
     except Exception:
         return None
 
+def _jetson_system_diagnostics():
+    """
+    Comprehensive Jetson system diagnostics similar to the bash probe command.
+    Returns a dict with system information for version matching and debugging.
+    """
+    info = {
+        "is_jetson": False,
+        "jetson_module": None,
+        "jetpack_version": None,
+        "cuda_version": None,
+        "cuda_arch": None,
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "torch_version": None,
+        "torch_cuda_version": None,
+        "torch_cuda_available": False,
+        "torchvision_version": None,
+        "torchvision_nms_available": False,
+    }
+
+    # Basic Jetson detection
+    info["is_jetson"] = _is_jetson()
+    if not info["is_jetson"]:
+        return info
+
+    # Parse Jetson release info
+    release_text = _jetson_release_info() or ""
+    if release_text:
+        # Extract revision (e.g., R36)
+        rev_match = re.search(r"R(\d+)", release_text)
+        if rev_match:
+            info["jetpack_version"] = f"JP{rev_match.group(1)[0]}.x"
+
+    # Query dpkg for nvidia packages
+    try:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "nvidia-l4t-core", "nvidia-jetpack"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if "nvidia-l4t-core" in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        info["l4t_version"] = parts[1]
+    except Exception:
+        pass
+
+    # Get CUDA version from nvcc
+    try:
+        result = subprocess.run(
+            ["nvcc", "--version"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        match = re.search(r"release (\d+\.\d+)", result.stdout)
+        if match:
+            info["cuda_version"] = match.group(1)
+    except Exception:
+        pass
+
+    # Get CUDA architecture from environment
+    info["cuda_arch"] = os.environ.get("JETSON_CUDA_ARCH_BIN", "8.7")
+
+    # Try to get Jetson module name
+    try:
+        result = subprocess.run(
+            ["cat", "/proc/device-tree/model"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            info["jetson_module"] = result.stdout.strip().rstrip("\x00")
+    except Exception:
+        pass
+
+    return info
+
+def _probe_torch_torchvision(venv_python, cuda_env=None):
+    """
+    Probe the installed torch/torchvision to check versions and NMS availability.
+    Returns a dict with the probe results.
+    """
+    probe_code = """
+import sys
+import json
+result = {
+    "torch_version": None,
+    "torch_cuda_version": None,
+    "torch_cuda_available": False,
+    "torchvision_version": None,
+    "torchvision_nms_available": False,
+    "error": None
+}
+
+try:
+    import torch
+    result["torch_version"] = torch.__version__
+    result["torch_cuda_version"] = getattr(torch.version, "cuda", None)
+    result["torch_cuda_available"] = torch.cuda.is_available()
+except Exception as e:
+    result["error"] = f"torch import: {repr(e)}"
+
+try:
+    import torchvision
+    result["torchvision_version"] = torchvision.__version__
+    # Check if nms operator exists
+    import torchvision.ops
+    result["torchvision_nms_available"] = hasattr(torch.ops.torchvision, "nms")
+except Exception as e:
+    if result["error"]:
+        result["error"] += f"; torchvision: {repr(e)}"
+    else:
+        result["error"] = f"torchvision: {repr(e)}"
+
+print(json.dumps(result))
+"""
+
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", probe_code],
+            capture_output=True,
+            text=True,
+            env=cuda_env,
+            timeout=30
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout.strip())
+        else:
+            return {"error": f"probe failed: {result.stderr}"}
+    except Exception as e:
+        return {"error": f"probe exception: {repr(e)}"}
+
+def _rebuild_torchvision_jetson(venv_python, venv_pip, torch_version, cuda_env):
+    """
+    Rebuild torchvision from source with CUDA extensions on Jetson.
+    Returns True if successful, False otherwise.
+    """
+    print("\n🔨 Rebuilding torchvision from source with CUDA extensions...")
+    print("   This may take 15-30 minutes on Jetson. Please be patient...")
+
+    # Determine the correct torchvision tag for the torch version
+    torch_parts = torch_version.split(".")
+    torch_major_minor = tuple(torch_parts[:2]) if len(torch_parts) >= 2 else ("2", "4")
+
+    vision_branch_map = {
+        ("2", "5"): "v0.20.0",
+        ("2", "4"): "v0.19.0",
+        ("2", "3"): "v0.18.0",
+        ("2", "2"): "v0.17.0",
+        ("2", "1"): "v0.16.0",
+        ("2", "0"): "v0.15.2",
+    }
+    vision_tag = vision_branch_map.get(torch_major_minor, "v0.19.0")
+
+    print(f"   Torch version: {torch_version}")
+    print(f"   Target torchvision tag: {vision_tag}")
+
+    # Get system diagnostics for CUDA arch
+    diag = _jetson_system_diagnostics()
+    cuda_arch = diag.get("cuda_arch", "8.7")
+
+    # Find CUDA home
+    cuda_home = None
+    for candidate in ["/usr/local/cuda-12.2", "/usr/local/cuda-12", "/usr/local/cuda"]:
+        if Path(candidate).exists():
+            cuda_home = candidate
+            break
+
+    if not cuda_home:
+        print("❌ CUDA installation not found")
+        return False
+
+    print(f"   Using CUDA_HOME: {cuda_home}")
+    print(f"   Using TORCH_CUDA_ARCH_LIST: {cuda_arch}")
+
+    # Install system dependencies
+    print("   Installing system build dependencies...")
+    subprocess.run(
+        [
+            "sudo", "apt-get", "install", "-y",
+            "libjpeg-dev", "zlib1g-dev", "libpython3-dev",
+            "libopenblas-dev", "libavcodec-dev", "libavformat-dev", "libswscale-dev"
+        ],
+        check=False,
+        capture_output=True
+    )
+
+    # Install Python build dependencies
+    print("   Installing Python build tools...")
+    try:
+        subprocess.run(
+            [str(venv_pip), "install", "--upgrade", "setuptools", "wheel", "ninja"],
+            check=True,
+            capture_output=True
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️  Failed to install build tools: {e}")
+        return False
+
+    # Uninstall existing torchvision
+    print("   Uninstalling existing torchvision...")
+    subprocess.run(
+        [str(venv_pip), "uninstall", "-y", "torchvision"],
+        check=False,
+        capture_output=True
+    )
+
+    # Set up build environment
+    build_env = cuda_env.copy() if cuda_env else os.environ.copy()
+    build_env.update({
+        "CUDA_HOME": cuda_home,
+        "FORCE_CUDA": "1",
+        "TORCH_CUDA_ARCH_LIST": cuda_arch,
+        "MAX_JOBS": "4",  # Limit parallel jobs to avoid OOM
+    })
+
+    # Build and install torchvision
+    print(f"   Building torchvision from {vision_tag}...")
+    print("   (This will take 15-30 minutes - progress will not be shown)")
+
+    try:
+        result = subprocess.run(
+            [
+                str(venv_pip),
+                "install",
+                "--no-cache-dir",
+                "--force-reinstall",
+                "--no-deps",
+                f"git+https://github.com/pytorch/vision.git@{vision_tag}",
+            ],
+            env=build_env,
+            timeout=3600,  # 1 hour timeout
+            capture_output=False,  # Show output for debugging
+        )
+
+        if result.returncode != 0:
+            print("❌ Torchvision build failed")
+            return False
+
+        print("✓ Torchvision built and installed successfully")
+        return True
+
+    except subprocess.TimeoutExpired:
+        print("❌ Torchvision build timed out after 1 hour")
+        return False
+    except Exception as e:
+        print(f"❌ Torchvision build failed: {e}")
+        return False
+
 def _jetson_torch_spec():
     """
     Return (extra_index_url, torch_wheel_url, torch_version, torchvision_version) for Jetson wheels.
@@ -369,6 +622,22 @@ def bootstrap_environment():
     print("=" * 70)
     if is_jetson:
         print("ℹ️  Detected Jetson/aarch64 device. Using Jetson-friendly install path.")
+
+        # Display system diagnostics
+        diag = _jetson_system_diagnostics()
+        print("\n📊 Jetson System Diagnostics:")
+        if diag.get("jetson_module"):
+            print(f"   Module: {diag['jetson_module']}")
+        if diag.get("jetpack_version"):
+            print(f"   JetPack: {diag['jetpack_version']}")
+        if diag.get("l4t_version"):
+            print(f"   L4T: {diag['l4t_version']}")
+        if diag.get("cuda_version"):
+            print(f"   CUDA: {diag['cuda_version']}")
+        if diag.get("cuda_arch"):
+            print(f"   CUDA Arch: {diag['cuda_arch']}")
+        print(f"   Python: {diag['python_version']}")
+        print()
 
     # Check if already in venv
     if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
@@ -515,6 +784,16 @@ def bootstrap_environment():
                 "\n   Will reinstall torch from the Jetson wheel index."
             )
 
+    # On Jetson, check if torchvision NMS operator is available; if not, force rebuild
+    if not reinstall_needed and is_jetson:
+        probe_result = _probe_torch_torchvision(venv_python, _jetson_cuda_env())
+        if probe_result.get("error") or not probe_result.get("torchvision_nms_available"):
+            _mark_reinstall(
+                "\n⚠️ Detected torchvision without NMS operator (C++ extensions not compiled)."
+                f"\n   Error: {probe_result.get('error', 'NMS not available')}"
+                "\n   Will rebuild torchvision from source with CUDA extensions."
+            )
+
     if reinstall_needed and requirements_file.exists():
         print("\n📥 Installing dependencies from requirements.txt...")
         print("⏳ This may take several minutes...")
@@ -585,13 +864,6 @@ def bootstrap_environment():
                     ("2", "0"): "v0.15.2",
                 }
                 vision_tag = vision_branch_map.get(tuple(torch_major_minor), "v0.19.0")
-                expected_vision_mm = ""
-                try:
-                    parts = vision_tag.lstrip("v").split(".")
-                    if len(parts) >= 2:
-                        expected_vision_mm = ".".join(parts[:2])
-                except Exception:
-                    expected_vision_mm = ""
 
                 print(f"   Installing torchvision from source (tag {vision_tag}, compatible with torch {torch_ver})")
                 print(f"   ⚠️  This may take 15-30 minutes on Jetson. Please be patient...")
@@ -644,55 +916,49 @@ def bootstrap_environment():
 
                 # Verify torchvision imports correctly (check for NMS operator)
                 print("   Verifying torchvision installation...")
-                vision_probe = "\n".join([
-                    "import sys, torch, traceback",
-                    "try:",
-                    "    import torchvision",
-                    "    from torchvision.ops import nms",
-                    "except Exception as e:",
-                    "    print('TORCHVISION_IMPORT_ERROR', type(e).__name__, e)",
-                    "    traceback.print_exc()",
-                    "    sys.exit(1)",
-                    "torch_mm = '.'.join(torch.__version__.split('.')[:2])",
-                    "vision_mm = '.'.join(torchvision.__version__.split('.')[:2])",
-                    f"expected = '{expected_vision_mm}'",
-                    "if expected and not vision_mm.startswith(expected):",
-                    "    print('TORCH_VISION_MISMATCH', torch.__version__, torchvision.__version__, expected)",
-                    "    sys.exit(1)",
-                    "try:",
-                    "    nms(torch.tensor([[0., 0., 1., 1.]], dtype=torch.float32), torch.tensor([0.5]), 0.5)",
-                    "except Exception as e:",
-                    "    print('TORCHVISION_NMS_ERROR', type(e).__name__, e)",
-                    "    traceback.print_exc()",
-                    "    sys.exit(1)",
-                    "print('TORCHVISION_OK', torch.__version__, torchvision.__version__)",
-                    "sys.exit(0)",
-                ])
-                vision_res = subprocess.run(
-                    [str(venv_python), "-c", vision_probe],
-                    capture_output=True,
-                    text=True,
-                    env=_jetson_cuda_env(),
-                )
-                if vision_res.returncode != 0:
-                    output = vision_res.stdout.strip() or vision_res.stderr.strip()
-                    print("❌ Torchvision self-check failed (torch/vision ABI mismatch likely).")
-                    print(f"   Details: {output[:300] if output else 'n/a'}")
-                    print("   Fix by reinstalling matching torch/vision:")
-                    print("     pip uninstall -y torch torchvision")
-                    if wheel_url:
-                        print(f"     pip install {wheel_url}")
+                probe_result = _probe_torch_torchvision(venv_python, _jetson_cuda_env())
+
+                if probe_result.get("error") or not probe_result.get("torchvision_nms_available"):
+                    print(f"⚠️  Torchvision verification failed: {probe_result.get('error', 'NMS not available')}")
+                    print(f"   torch: {probe_result.get('torch_version', 'unknown')}")
+                    print(f"   torchvision: {probe_result.get('torchvision_version', 'unknown')}")
+                    print(f"   NMS available: {probe_result.get('torchvision_nms_available', False)}")
+
+                    # Attempt automatic rebuild
+                    if torch_ver:
+                        print("\n🔄 Attempting automatic torchvision rebuild with CUDA extensions...")
+                        rebuild_success = _rebuild_torchvision_jetson(
+                            venv_python,
+                            venv_pip,
+                            torch_ver,
+                            _jetson_cuda_env()
+                        )
+
+                        if rebuild_success:
+                            # Verify again after rebuild
+                            print("\n   Re-verifying torchvision after rebuild...")
+                            probe_result = _probe_torch_torchvision(venv_python, _jetson_cuda_env())
+
+                            if probe_result.get("torchvision_nms_available"):
+                                print(f"✅ Torchvision rebuild successful!")
+                                print(f"   torch: {probe_result.get('torch_version')}")
+                                print(f"   torchvision: {probe_result.get('torchvision_version')}")
+                                print(f"   NMS available: {probe_result.get('torchvision_nms_available')}")
+                            else:
+                                print("⚠️  Torchvision rebuild completed but NMS still not available")
+                                print(f"   Error: {probe_result.get('error', 'unknown')}")
+                        else:
+                            print("❌ Automatic torchvision rebuild failed")
+                            print("   You may need to build it manually:")
+                            print(f"     source venv/bin/activate")
+                            print(f"     pip install --no-cache-dir --no-deps git+https://github.com/pytorch/vision.git@{vision_tag}")
                     else:
-                        print("     pip install <JETSON_TORCH_WHEEL_URL>")
-                    print(f"     pip install --no-cache-dir --no-deps git+https://github.com/pytorch/vision.git@{vision_tag}")
-                    print("   Then delete venv/.deps_installed and rerun python3 app.py")
-                    try:
-                        marker_file.unlink()
-                    except FileNotFoundError:
-                        pass
-                    print("⚠️ Torchvision self-check failed; continuing anyway (torchvision::nms not available).")
+                        print("⚠️  Cannot determine torch version for torchvision rebuild")
                 else:
-                    print(f"✓ Torchvision verification passed: {vision_res.stdout.strip()}")
+                    print(f"✅ Torchvision verification passed!")
+                    print(f"   torch: {probe_result.get('torch_version')}")
+                    print(f"   torchvision: {probe_result.get('torchvision_version')}")
+                    print(f"   NMS available: {probe_result.get('torchvision_nms_available')}")
 
             # Verify CUDA availability on Jetson immediately after torch install
             if is_jetson:
@@ -831,11 +1097,52 @@ if torch.cuda.is_available():
     except Exception:
         pass
 
+# Check for torchvision NMS availability and provide helpful error message
+try:
+    import torchvision  # noqa: F401
+    _TORCHVISION_NMS_AVAILABLE = hasattr(torch.ops.torchvision, "nms")
+    if not _TORCHVISION_NMS_AVAILABLE:
+        print("\n" + "=" * 70)
+        print("⚠️  WARNING: torchvision::nms operator not available")
+        print("=" * 70)
+        print("This usually means torchvision was not built with CUDA extensions.")
+        print("\nTo fix this issue:")
+        if _is_jetson():
+            print("1. Delete the installation marker: rm venv/.deps_installed")
+            print("2. Re-run the app: python3 app.py")
+            print("   (The app will automatically rebuild torchvision with CUDA)")
+        else:
+            print("1. Reinstall torchvision with proper CUDA support")
+            print("2. Or build from source: pip install --no-deps git+https://github.com/pytorch/vision.git")
+        print("\nAttempting to continue anyway...")
+        print("=" * 70 + "\n")
+except Exception as e:
+    print(f"⚠️  Warning: Could not check torchvision NMS availability: {e}")
+    _TORCHVISION_NMS_AVAILABLE = False
+
 try:
     from depth_anything_3.api import DepthAnything3
     from depth_anything_3.registry import MODEL_REGISTRY
 except ImportError as e:
     print(f"❌ Error importing DA3 modules: {e}")
+
+    # Provide more specific guidance for the NMS error
+    if "torchvision::nms" in str(e) or "operator torchvision::nms does not exist" in str(e):
+        print("\n" + "=" * 70)
+        print("🔧 DETECTED ISSUE: torchvision C++ extensions not compiled")
+        print("=" * 70)
+        if _is_jetson():
+            print("\nAutomatic fix steps:")
+            print("1. Delete: rm venv/.deps_installed")
+            print("2. Re-run: python3 app.py")
+            print("\nThe bootstrap will automatically rebuild torchvision with CUDA.")
+        else:
+            print("\nFix by rebuilding torchvision:")
+            print("  source venv/bin/activate")
+            print("  pip uninstall -y torchvision")
+            print("  pip install --no-deps git+https://github.com/pytorch/vision.git")
+        print("=" * 70)
+
     raise
 
 # Optional: extended API helpers (e.g., /api/v1/process/image)
@@ -1371,8 +1678,29 @@ def process_file():
                     confidence_maps = getattr(prediction, "conf", None)
 
                 # Extract camera poses if available (for video sequences)
+                print(f"\n🔍 Camera Pose Prediction Debug:")
+                print(f"  • Prediction type: {type(prediction).__name__}")
+                print(f"  • Has 'extrinsics' attr: {hasattr(prediction, 'extrinsics')}")
+                print(f"  • Has 'intrinsics' attr: {hasattr(prediction, 'intrinsics')}")
+                print(f"  • Available attrs: {[a for a in dir(prediction) if not a.startswith('_')]}")
+
                 camera_poses = getattr(prediction, "extrinsics", None)
+                print(f"  • prediction.extrinsics value: {type(camera_poses).__name__ if camera_poses is not None else 'None'}")
+                if camera_poses is not None:
+                    print(f"  • Number of poses: {len(camera_poses) if hasattr(camera_poses, '__len__') else 'N/A'}")
+                    if hasattr(camera_poses, '__len__') and len(camera_poses) > 0:
+                        first_pose = np.array(camera_poses[0])
+                        print(f"  • First pose shape: {first_pose.shape}")
+                        print(f"  • First pose is identity: {np.allclose(first_pose, np.eye(4) if first_pose.shape == (4,4) else np.eye(3,4))}")
+                        if first_pose.shape[0] >= 3 and first_pose.shape[1] >= 4:
+                            print(f"  • First pose translation: {first_pose[:3, 3]}")
+                else:
+                    print(f"  ⚠️  Model did NOT predict camera poses - using identity matrices")
+                    print(f"  ⚠️  This will result in all camera positions at (0,0,0)")
+                print()
+
                 if camera_poses is None:
+                    # Use identity matrices as fallback (will show all at origin)
                     camera_poses = [np.eye(4) for _ in range(len(prediction.depth))]
 
                 for i in range(len(prediction.depth)):
@@ -1617,6 +1945,26 @@ def get_camera_path():
     camera_poses = [frame["camera_pose"] for frame in state.current_video_sequence["frames"]]
     camera_poses_col_major_flat = []
     camera_poses_c2w = []  # Camera-to-world poses
+
+    # DEBUG: Log first pose to check if it's valid
+    if len(camera_poses) > 0:
+        first_pose = np.array(camera_poses[0], dtype=np.float32)
+        print("\n" + "="*60)
+        print("🔍 Camera Path Debug - First Frame")
+        print("="*60)
+        print(f"First extrinsics (w2c) shape: {first_pose.shape}")
+        print(f"First extrinsics:\n{first_pose}")
+        print(f"Is identity? {np.allclose(first_pose, np.eye(4) if first_pose.shape == (4, 4) else np.eye(3, 4))}")
+        if first_pose.shape == (4, 4):
+            print(f"Translation component (w2c): {first_pose[:3, 3]}")
+            try:
+                c2w_test = np.linalg.inv(first_pose)
+                print(f"Inverted c2w translation: {c2w_test[:3, 3]}")
+            except:
+                print("ERROR: Cannot invert matrix!")
+        print("="*60 + "\n")
+
+    # REMOVED: Synthetic path generation - use REAL poses from DA3 model!
 
     # Extract camera positions from poses for path visualization
     camera_positions = []
