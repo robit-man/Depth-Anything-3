@@ -1,11 +1,11 @@
-# Depth Anything 3 Wrapper and restful endpoints
+# Depth Anything 3 Wrapper and restful endpoints + Jetson AARCH64 Support!
 
-To evaluate all inclusive single entrypoint service + frontend run:
+To evaluate all inclusive single entrypoint service + frontend run (non jetson):
 ```bash
 python3 main.py
 ```
 
-To evaluate granular access via standalone frontend and rest-only app.py
+To evaluate granular access via standalone frontend and rest-only app.py (tested on jetpack 6.0)
 ```bash
 python3 app.py
 ```
