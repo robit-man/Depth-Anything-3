@@ -1744,8 +1744,8 @@ def process_file():
                     h, w = depth.shape
                     y_coords, x_coords = np.mgrid[0:h, 0:w]
 
-                    x3d = -(x_coords - cx) * depth / fx
-                    y3d = -(y_coords - cy) * depth / fy
+                    x3d = (x_coords - cx) * depth / fx
+                    y3d = (y_coords - cy) * depth / fy
                     z3d = depth
 
                     points = np.stack([x3d, y3d, z3d], axis=-1).reshape(-1, 3)
