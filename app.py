@@ -1759,18 +1759,27 @@ def process_file():
                         conf_flat = conf_flat[valid]
 
                     # Transform points from camera frame to world frame using extrinsics (assumed world->camera)
-                    cam_pose = camera_poses[i] if i < len(camera_poses) else np.eye(4, dtype=np.float32)
-                    cam_to_world = None
+                    cam_pose_w2c = camera_poses[i] if i < len(camera_poses) else np.eye(4, dtype=np.float32)
+                    cam_to_world = np.eye(4, dtype=np.float32)
+                    points_world = points
                     try:
-                        cam_pose = np.array(cam_pose, dtype=np.float32)
-                        if cam_pose.shape == (4, 4):
-                            cam_to_world = np.linalg.inv(cam_pose)  # invert to get camera->world
+                        cam_pose_w2c = np.array(cam_pose_w2c, dtype=np.float32)
+                        if cam_pose_w2c.shape == (3, 4):
+                            cam_pose_w2c = np.vstack([cam_pose_w2c, np.array([0, 0, 0, 1], dtype=np.float32)])
+
+                        if cam_pose_w2c.shape == (4, 4):
+                            try:
+                                cam_to_world = np.linalg.inv(cam_pose_w2c)  # invert to get camera->world
+                            except Exception as e:
+                                print(f"[CameraPose] Failed to invert pose for frame {i}: {e}. Using identity.")
+                                cam_to_world = np.eye(4, dtype=np.float32)
+
                             homog = np.concatenate([points, np.ones((points.shape[0], 1), dtype=np.float32)], axis=1)
                             points_world = (cam_to_world @ homog.T).T[:, :3]
                         else:
-                            points_world = points
-                    except Exception:
-                        points_world = points
+                            print(f"[CameraPose] Invalid pose shape {cam_pose_w2c.shape} for frame {i}; using identity.")
+                    except Exception as e:
+                        print(f"[CameraPose] Error processing pose for frame {i}: {e}; using identity.")
 
                     points_list.append(points_world)
                     colors_list.append(colors)
@@ -1799,10 +1808,8 @@ def process_file():
                             # Store camera-to-world so downstream viewers/path use correct orientation.
                             # Row-major (nested lists) is preserved for backward compatibility; flat column-major
                             # is added for Three.js clients that want direct Matrix4.fromArray usage.
-                            "camera_pose": (cam_to_world.tolist() if cam_to_world is not None else (np.eye(4).tolist())),
-                            "camera_pose_col_major_flat": (
-                                cam_to_world.T.reshape(-1).tolist() if cam_to_world is not None else np.eye(4).T.reshape(-1).tolist()
-                            ),
+                            "camera_pose": cam_to_world.tolist(),
+                            "camera_pose_col_major_flat": cam_to_world.T.reshape(-1).tolist(),
                             "intrinsics": ixt.tolist(),
                             "num_points": len(frame_points)
                         }
@@ -1971,13 +1978,14 @@ def get_camera_path():
 
     # IMPORTANT: Frame camera_pose is already c2w (camera-to-world)!
     # No inversion needed - just extract and reformat the data.
-    camera_poses_c2w = [frame["camera_pose"] for frame in state.current_video_sequence["frames"]]
+    frames = state.current_video_sequence["frames"]
+    camera_poses_c2w = []
     camera_poses_col_major_flat = []
     camera_positions = []
 
     # DEBUG: Log first pose to check if it's valid
-    if len(camera_poses_c2w) > 0:
-        first_pose = np.array(camera_poses_c2w[0], dtype=np.float32)
+    if len(frames) > 0:
+        first_pose = np.array(frames[0]["camera_pose"], dtype=np.float32)
         print("\n" + "="*60)
         print("🔍 Camera Path Debug - First Frame")
         print("="*60)
@@ -1989,8 +1997,9 @@ def get_camera_path():
         print("="*60 + "\n")
 
     # Extract camera positions and create column-major format
-    for pose in camera_poses_c2w:
-        pose_array = np.array(pose, dtype=np.float32)
+    for frame_idx, frame in enumerate(frames):
+        pose_array = np.array(frame["camera_pose"], dtype=np.float32)
+        camera_poses_c2w.append(pose_array.tolist())
 
         # Extract camera position from c2w matrix (no inversion needed!)
         if pose_array.shape == (4, 4):
@@ -1999,9 +2008,10 @@ def get_camera_path():
             camera_positions.append(position)
 
             # Provide column-major flattening of c2w (Three.js Matrix4.fromArray-friendly)
-            camera_poses_col_major_flat.append(pose_array.T.reshape(-1).tolist())
+            col_major = frame.get("camera_pose_col_major_flat")
+            camera_poses_col_major_flat.append(col_major if col_major is not None else pose_array.T.reshape(-1).tolist())
         else:
-            print(f"Warning: Invalid pose shape: {pose_array.shape}")
+            print(f"Warning: Invalid pose shape for frame {frame_idx}: {pose_array.shape}")
             # Fallback: use origin
             position = [0.0, 0.0, 0.0]
             camera_positions.append(position)

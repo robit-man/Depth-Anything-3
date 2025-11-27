@@ -3226,6 +3226,20 @@
                 // Display point cloud (vertices are already in world space, no transformation needed)
                 this.updatePointCloud(frame.vertices, frame.colors, null);
 
+                // Debug: Log point cloud bounds for this frame
+                if (POSE_DEBUG_CONFIG.logFirstRawPose && frameIndex === 0 && frame.vertices && frame.vertices.length > 0) {
+                    const verts = frame.vertices;
+                    const xs = verts.map(v => v[0]);
+                    const ys = verts.map(v => v[1]);
+                    const zs = verts.map(v => v[2]);
+                    console.group('📊 Frame 0 Point Cloud Bounds');
+                    console.log('X range:', Math.min(...xs).toFixed(3), 'to', Math.max(...xs).toFixed(3));
+                    console.log('Y range:', Math.min(...ys).toFixed(3), 'to', Math.max(...ys).toFixed(3));
+                    console.log('Z range:', Math.min(...zs).toFixed(3), 'to', Math.max(...zs).toFixed(3));
+                    console.log('Num points:', verts.length);
+                    console.groupEnd();
+                }
+
                 this.updateFrameCounter();
                 this.updateCameraHelper(frame);
                 this.syncCloudVisibility();
@@ -3675,13 +3689,25 @@
 
                     console.group('📹 Camera Path Analysis');
                     console.log('Total keyframes:', keyframePositions.length);
-                    console.log('First position (should be ~origin):',
+                    console.log('First position:',
                         `(${keyframePositions[0].x.toFixed(3)}, ${keyframePositions[0].y.toFixed(3)}, ${keyframePositions[0].z.toFixed(3)})`
                     );
                     if (keyframePositions.length > 1) {
                         console.log('Last position:',
                             `(${keyframePositions[keyframePositions.length-1].x.toFixed(3)}, ${keyframePositions[keyframePositions.length-1].y.toFixed(3)}, ${keyframePositions[keyframePositions.length-1].z.toFixed(3)})`
                         );
+
+                        // Show several intermediate positions
+                        const sampleIndices = [
+                            Math.floor(keyframePositions.length * 0.25),
+                            Math.floor(keyframePositions.length * 0.5),
+                            Math.floor(keyframePositions.length * 0.75)
+                        ];
+                        console.log('Sample positions (25%, 50%, 75%):');
+                        sampleIndices.forEach((idx, i) => {
+                            const pos = keyframePositions[idx];
+                            console.log(`  [${idx}]: (${pos.x.toFixed(3)}, ${pos.y.toFixed(3)}, ${pos.z.toFixed(3)})`);
+                        });
 
                         // Calculate path statistics
                         const distances = [];
@@ -3829,6 +3855,13 @@
                     });
 
                     console.log(`✅ Added ${keyframePositions.length} keyframe markers`);
+
+                    // ========== ADD COORDINATE AXES AT FIRST CAMERA FOR REFERENCE ==========
+                    // Add axes helper at the first camera position to show the world coordinate system
+                    const firstCameraAxes = new THREE.AxesHelper(0.3);
+                    firstCameraAxes.position.copy(keyframePositions[0]);
+                    this.cameraPathLine.add(firstCameraAxes);
+                    console.log('✅ Added coordinate axes at first camera position');
 
                     // ========== ADD DIRECTION ARROWS ALONG PATH ==========
                     // Add arrows showing camera direction at intervals
