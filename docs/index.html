@@ -999,14 +999,14 @@
         //
         // **Backend Convention (Depth Anything 3):**
         // - The model predicts EXTRINSICS: 4x4 world-to-camera transformation matrices
-        // - These are stored as numpy arrays (row-major memory layout)
-        // - When sent via JSON (.tolist()), they remain row-major: [row0, row1, row2, row3]
+        // - Backend INVERTS these to camera-to-world (c2w) before storing in frames
+        // - Backend TRANSFORMS points from camera space to world space before storing
+        // - Frame data contains c2w matrices (row-major) and world-space points
         //
-        // **Backend API Response (/api/video/camera_path):**
-        // - "poses": Original extrinsics (world-to-camera, row-major)
-        // - "c2w_poses": Inverted extrinsics to camera-to-world (row-major)
-        // - "poses_col_major_flat": c2w matrices flattened in column-major order for Three.js
-        // - "positions": Camera positions extracted from c2w[:3, 3]
+        // **Frame Data (/api/video/frames):**
+        // - "vertices": Point positions in WORLD SPACE (already transformed)
+        // - "camera_pose": c2w matrix in row-major format (nested array)
+        // - "camera_pose_col_major_flat": c2w matrix in column-major flat format (optimal)
         //
         // **Three.js Convention:**
         // - Matrix4.fromArray() expects COLUMN-MAJOR order: [col0, col1, col2, col3]
@@ -1014,12 +1014,13 @@
         // - Camera-to-world (c2w) matrix transforms from camera space to world space
         //
         // **Transformation Pipeline:**
-        // 1. Model predicts extrinsics (w2c) → Backend inverts to c2w
-        // 2. Backend transposes c2w for column-major → "poses_col_major_flat"
-        // 3. Frontend loads with Matrix4.fromArray() → Ready for Three.js
+        // 1. Model predicts extrinsics (w2c) → Backend inverts to c2w → Stores in frame.camera_pose
+        // 2. Backend transforms points to world space → Stores in frame.vertices
+        // 3. Backend transposes c2w for column-major → "camera_pose_col_major_flat"
+        // 4. Frontend loads with Matrix4.fromArray() → Ready for Three.js
         //
-        // **Point Cloud Transformation:**
-        // - Backend provides per-frame points in CAMERA SPACE (not world space)
+        // **Point Cloud Display:**
+        // - Points are ALREADY in world space, no transformation needed
         // - To visualize all frames together, we must transform to world space
         // - Transform: P_world = c2w * P_camera
         //
@@ -3043,12 +3044,15 @@
          *    - Quaternion (qvec): 4D rotation representation
          *    - Field of View (fov): 2D horizontal and vertical FOV angles
          * 5. **Pose Conversion**: 9D encoding → 4×4 extrinsics matrix (world-to-camera)
-         * 6. **Backend Processing**: Extrinsics inverted to camera-to-world (c2w) for frontend
-         * 7. **Path Construction**: Camera positions extracted from c2w matrices
+         * 6. **Backend Processing**:
+         *    - Inverts extrinsics to camera-to-world (c2w)
+         *    - Transforms points from camera space to world space
+         *    - Stores c2w and world-space points in frame data
+         * 7. **Path Construction**: Camera positions extracted from c2w matrices in frames
          *
          * **Coordinate System:**
-         * - Backend: Extrinsics (w2c) in row-major numpy format
-         * - API Response: c2w matrices in both row-major and column-major formats
+         * - Model Output: Extrinsics (w2c) predicted by DA3 camera module
+         * - Frame Data: c2w matrices (row-major and column-major) + world-space points
          * - Three.js: Column-major c2w matrices (preferred format)
          * - Camera Space: +X right, +Y up, -Z forward (OpenGL/Three.js convention)
          *
@@ -3157,16 +3161,16 @@
              * Load and display a specific video frame.
              *
              * **Frame Data Structure:**
-             * - vertices: Point positions in CAMERA SPACE
+             * - vertices: Point positions in WORLD SPACE (already transformed by backend)
              * - colors: RGB colors for each point
-             * - camera_pose: Extrinsics matrix (world-to-camera, w2c)
-             * - camera_pose_col_major_flat: (if available) Column-major flat c2w
+             * - camera_pose: Camera-to-world matrix (c2w, row-major nested array)
+             * - camera_pose_col_major_flat: Camera-to-world matrix (c2w, column-major flat array, ready for Three.js)
              * - intrinsics: 3x3 camera intrinsics matrix
              *
              * **Processing Steps:**
              * 1. Load frame from buffer (preload if needed)
-             * 2. Parse camera pose to c2w matrix
-             * 3. Transform point cloud from camera space to world space
+             * 2. Parse camera pose (already c2w, no inversion needed)
+             * 3. Display point cloud (already in world space, no transformation needed)
              * 4. Update visualization (frustum, path highlight, etc.)
              */
             async loadFrame(frameIndex) {
@@ -3183,9 +3187,9 @@
                     return;
                 }
 
-                // Parse camera pose
-                // Note: Backend may provide camera_pose_col_major_flat (c2w, ready for Three.js)
-                // or camera_pose (extrinsics, w2c, needs inversion for c2w)
+                // Parse camera pose (backend provides c2w, NOT w2c)
+                // Backend always provides camera_pose as c2w (camera-to-world)
+                // camera_pose_col_major_flat is the optimal format (column-major, ready for Three.js)
                 const shouldLogRawPose = (
                     POSE_DEBUG_CONFIG.logFirstRawPose &&
                     !this.rawPoseLogged &&
@@ -3194,23 +3198,22 @@
 
                 let c2wMatrix;
                 if (frame.camera_pose_col_major_flat) {
-                    // Optimal: Pre-computed c2w in column-major format
+                    // Optimal: Pre-computed c2w in column-major format (no transpose needed)
                     c2wMatrix = this.poseToMatrix(frame.camera_pose_col_major_flat, {
                         logRaw: shouldLogRawPose,
                         frameIndex,
                         alreadyColumnMajor: true
                     });
                 } else if (frame.camera_pose) {
-                    // Fallback: Parse extrinsics (w2c) and invert to c2w
-                    const extrinsics = this.poseToMatrix(frame.camera_pose, {
+                    // Fallback: Parse c2w in row-major format (needs transpose)
+                    c2wMatrix = this.poseToMatrix(frame.camera_pose, {
                         logRaw: shouldLogRawPose,
                         frameIndex,
                         alreadyColumnMajor: false
                     });
-                    c2wMatrix = extrinsics ? new THREE.Matrix4().copy(extrinsics).invert() : null;
 
                     if (shouldLogRawPose && c2wMatrix) {
-                        console.log('🔄 Inverted extrinsics to c2w for frame', frameIndex);
+                        console.log('✅ Loaded c2w pose for frame', frameIndex);
                     }
                 }
 
@@ -3220,9 +3223,8 @@
 
                 this.currentFrame = frameIndex;
 
-                // Transform point cloud to world space using extrinsics (w2c)
-                // The transformPointsToWorldSpace function expects w2c and inverts internally
-                this.updatePointCloud(frame.vertices, frame.colors, frame.camera_pose);
+                // Display point cloud (vertices are already in world space, no transformation needed)
+                this.updatePointCloud(frame.vertices, frame.colors, null);
 
                 this.updateFrameCounter();
                 this.updateCameraHelper(frame);
@@ -3272,7 +3274,10 @@
             /**
              * Convert backend pose data to Three.js Matrix4 (camera-to-world).
              *
-             * @param {Array|THREE.Matrix4} pose - Pose data from backend
+             * **IMPORTANT:** Backend always provides c2w (camera-to-world) matrices, never w2c.
+             * No inversion is needed - just handle the row/column-major format conversion.
+             *
+             * @param {Array|THREE.Matrix4} pose - Camera-to-world pose data from backend
              * @param {Object} options - Conversion options
              * @param {boolean} options.logRaw - Log raw pose for debugging
              * @param {number} options.frameIndex - Frame index for debug logging
@@ -3280,10 +3285,9 @@
              * @returns {THREE.Matrix4|null} Camera-to-world transformation matrix
              *
              * **Implementation Details:**
-             * - Backend provides "poses_col_major_flat" which is already in the correct format for Three.js
-             * - These are c2w matrices, transposed for column-major ordering
-             * - Simply load them with Matrix4.fromArray() without additional transposition
-             * - Fallback to row-major c2w_poses if column-major not available (requires transpose)
+             * - Backend provides "camera_pose_col_major_flat" (optimal): c2w in column-major, ready for Three.js
+             * - Backend provides "camera_pose" (fallback): c2w in row-major, needs transpose
+             * - No inversion is performed - backend already inverted w2c to c2w
              */
             poseToMatrix(pose, options = {}) {
                 if (!pose) return null;
@@ -3374,7 +3378,7 @@
 
                     // Prefer column-major flat format (already correct for Three.js)
                     const colMajorFlat = raw.poses_col_major_flat || raw.c2w_poses_col_major_flat || [];
-                    const rowMajorNested = raw.c2w_poses || raw.poses || [];
+                    const rowMajorNested = raw.c2w_poses || [];
 
                     // Convert poses to Matrix4
                     let poseMats = [];
@@ -3414,6 +3418,11 @@
                             return v;
                         });
                         console.log('ℹ️ Extracted positions from matrices');
+                    }
+
+                    if (positions.length === 0) {
+                        console.error('❌ No valid camera poses found');
+                        return null;
                     }
 
                     // Validate positions
@@ -3487,43 +3496,40 @@
             /**
              * Transform point cloud from camera space to world space.
              *
-             * **Critical Understanding:**
-             * - Backend provides per-frame vertices in CAMERA SPACE (relative to that camera)
-             * - Backend provides "camera_pose" as EXTRINSICS (world-to-camera, w2c)
-             * - To place points in world space: P_world = c2w * P_camera
-             * - Therefore: c2w = inverse(extrinsics)
+             * **IMPORTANT:** As of the latest backend changes, vertices are already in world space.
+             * This function is only called for legacy compatibility or non-video point clouds.
+             * For video frames, vertices are pre-transformed in the backend and cameraPose is null.
              *
-             * @param {Float32Array} positions - Point positions in camera space [x,y,z,x,y,z,...]
-             * @param {Array|THREE.Matrix4} cameraPose - Extrinsics matrix (world-to-camera)
+             * **Critical Understanding (when used):**
+             * - If vertices ARE in camera space (rare), cameraPose should be c2w (camera-to-world)
+             * - To place points in world space: P_world = c2w * P_camera
+             * - No inversion needed if cameraPose is already c2w
+             *
+             * @param {Float32Array} positions - Point positions [x,y,z,x,y,z,...]
+             * @param {Array|THREE.Matrix4|null} cameraPose - Camera-to-world matrix, or null if already world-space
              * @returns {Float32Array} Transformed positions in world space
              */
             transformPointsToWorldSpace(positions, cameraPose) {
+                // If no camera pose, points are already in world space (typical for video frames)
                 if (!cameraPose) {
-                    console.warn('⚠️ No camera pose provided, points remain in camera space');
                     return positions;
                 }
 
-                // Parse camera pose (extrinsics: world-to-camera)
-                let extrinsics;
+                // Parse camera pose (c2w: camera-to-world)
+                let c2w;
                 if (cameraPose instanceof THREE.Matrix4) {
-                    extrinsics = cameraPose.clone();
+                    c2w = cameraPose.clone();
                 } else {
                     const flat = cameraPose.flat ? cameraPose.flat() : [].concat(...cameraPose);
                     const normalized = flat.length === 12 ? [...flat, 0, 0, 0, 1] : flat;
-                    extrinsics = new THREE.Matrix4().fromArray(normalized);
-                    // Note: Backend sends row-major, but since this is extrinsics (not c2w),
-                    // we may need to transpose. Check if "camera_pose_col_major_flat" exists.
-                    // For now, assume row-major and transpose.
-                    extrinsics.transpose();
+                    c2w = new THREE.Matrix4().fromArray(normalized);
+                    // Note: Backend sends row-major c2w, so transpose for Three.js
+                    c2w.transpose();
                 }
-
-                // Invert extrinsics to get camera-to-world transformation
-                const c2w = new THREE.Matrix4().copy(extrinsics).invert();
 
                 // Debug: Log first transformation
                 if (!this.loggedFirstTransform) {
                     console.group('🔄 First Point Cloud Transform');
-                    console.log('Extrinsics (w2c) position:', new THREE.Vector3().setFromMatrixPosition(extrinsics).toArray());
                     console.log('Camera-to-world (c2w) position:', new THREE.Vector3().setFromMatrixPosition(c2w).toArray());
 
                     // Test point: 1 meter forward in camera space (0, 0, -1 in OpenGL/Three.js camera coords)

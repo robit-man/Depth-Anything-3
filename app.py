@@ -1969,64 +1969,50 @@ def get_camera_path():
     if state.current_video_sequence is None:
         return jsonify({"error": "No video sequence available"}), 404
 
-    camera_poses = [frame["camera_pose"] for frame in state.current_video_sequence["frames"]]
+    # IMPORTANT: Frame camera_pose is already c2w (camera-to-world)!
+    # No inversion needed - just extract and reformat the data.
+    camera_poses_c2w = [frame["camera_pose"] for frame in state.current_video_sequence["frames"]]
     camera_poses_col_major_flat = []
-    camera_poses_c2w = []  # Camera-to-world poses
+    camera_positions = []
 
     # DEBUG: Log first pose to check if it's valid
-    if len(camera_poses) > 0:
-        first_pose = np.array(camera_poses[0], dtype=np.float32)
+    if len(camera_poses_c2w) > 0:
+        first_pose = np.array(camera_poses_c2w[0], dtype=np.float32)
         print("\n" + "="*60)
         print("🔍 Camera Path Debug - First Frame")
         print("="*60)
-        print(f"First extrinsics (w2c) shape: {first_pose.shape}")
-        print(f"First extrinsics:\n{first_pose}")
+        print(f"First c2w pose shape: {first_pose.shape}")
+        print(f"First c2w pose:\n{first_pose}")
         print(f"Is identity? {np.allclose(first_pose, np.eye(4) if first_pose.shape == (4, 4) else np.eye(3, 4))}")
         if first_pose.shape == (4, 4):
-            print(f"Translation component (w2c): {first_pose[:3, 3]}")
-            try:
-                c2w_test = np.linalg.inv(first_pose)
-                print(f"Inverted c2w translation: {c2w_test[:3, 3]}")
-            except:
-                print("ERROR: Cannot invert matrix!")
+            print(f"Camera position (c2w[:3, 3]): {first_pose[:3, 3]}")
         print("="*60 + "\n")
 
-    # REMOVED: Synthetic path generation - use REAL poses from DA3 model!
-
-    # Extract camera positions from poses for path visualization
-    camera_positions = []
-    for pose in camera_poses:
-        # pose is 4x4 extrinsics matrix (world-to-camera)
-        # We need to invert it to get the camera position in world space
+    # Extract camera positions and create column-major format
+    for pose in camera_poses_c2w:
         pose_array = np.array(pose, dtype=np.float32)
 
-        # Invert extrinsics to get camera-to-world
-        try:
-            c2w = np.linalg.inv(pose_array)
-            # Camera position in world space is the translation of c2w
-            position = c2w[:3, 3].tolist()
+        # Extract camera position from c2w matrix (no inversion needed!)
+        if pose_array.shape == (4, 4):
+            # Camera position is directly in the translation component of c2w
+            position = pose_array[:3, 3].tolist()
             camera_positions.append(position)
 
-            # Store c2w for frustum visualization
-            camera_poses_c2w.append(c2w.tolist())
-
             # Provide column-major flattening of c2w (Three.js Matrix4.fromArray-friendly)
-            camera_poses_col_major_flat.append(c2w.T.reshape(-1).tolist())
-        except Exception as e:
-            print(f"Warning: Failed to invert camera pose: {e}")
-            # Fallback: use identity
+            camera_poses_col_major_flat.append(pose_array.T.reshape(-1).tolist())
+        else:
+            print(f"Warning: Invalid pose shape: {pose_array.shape}")
+            # Fallback: use origin
             position = [0.0, 0.0, 0.0]
             camera_positions.append(position)
             camera_poses_col_major_flat.append(None)
-            camera_poses_c2w.append(pose_array.tolist())
 
     return jsonify({
-        "poses": camera_poses,  # Original extrinsics (world-to-camera)
-        "c2w_poses": camera_poses_c2w,  # Inverted to camera-to-world
-        "poses_col_major_flat": camera_poses_col_major_flat,  # c2w in column-major format
+        "c2w_poses": camera_poses_c2w,  # Camera-to-world (row-major nested)
+        "poses_col_major_flat": camera_poses_col_major_flat,  # c2w in column-major flat format
         "c2w_poses_col_major_flat": camera_poses_col_major_flat,  # Same as above, explicit name
-        "positions": camera_positions,  # Extracted from c2w matrices
-        "num_frames": len(camera_poses),
+        "positions": camera_positions,  # Extracted from c2w[:3, 3]
+        "num_frames": len(camera_poses_c2w),
         "pose_convention": {
             "type": "camera_to_world",
             "storage": "c2w_poses are 4x4 row-major; camera position in last column",
