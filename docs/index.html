@@ -2177,6 +2177,60 @@
             }
         }
 
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        async function fetchModelStatus() {
+            try {
+                const res = await fetch('/api/model_status');
+                if (!res.ok) return null;
+                return await res.json();
+            } catch (err) {
+                console.warn('Model status check failed', err);
+                return null;
+            }
+        }
+
+        async function waitForModelReady(maxAttempts = 60, delayMs = 1500) {
+            for (let i = 0; i < maxAttempts; i++) {
+                const status = await fetchModelStatus();
+                if (status) {
+                    applyModelStatus(status);
+                    if (status.status === 'ready') return true;
+                    if (status.status === 'error') return false;
+                }
+                await sleep(delayMs);
+            }
+            return false;
+        }
+
+        async function ensureModelReady() {
+            const current = await fetchModelStatus();
+            if (current?.status === 'ready') {
+                applyModelStatus(current);
+                return true;
+            }
+            if (current?.status === 'loading') {
+                applyModelStatus(current);
+                return await waitForModelReady();
+            }
+
+            // Not loaded: start loading
+            try {
+                const res = await fetch('/api/load_model', { method: 'POST' });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    alert('Error starting model load: ' + (data.message || data.error || 'unknown error'));
+                    return false;
+                }
+                applyModelStatus({ status: 'loading', progress: 0 });
+                return await waitForModelReady();
+            } catch (err) {
+                console.error('Failed to start model load', err);
+                alert('Failed to start model load. See console for details.');
+                return false;
+            }
+        }
+
         // Camera capture (upload frame or quick video)
         async function openCameraModal() {
             document.getElementById('camera-modal').classList.add('active');
@@ -2408,13 +2462,10 @@
                 return;
             }
 
-            // Otherwise: send to backend for inference
-            // Check if model is ready
-            const statusResponse = await fetch('/api/model_status');
-            const statusData = await statusResponse.json();
-
-            if (statusData.status !== 'ready') {
-                alert('Please load a model first by clicking "Select Model" and then "Load Model"');
+            // Otherwise: send to backend for inference (ensure model is loaded first)
+            const modelReady = await ensureModelReady();
+            if (!modelReady) {
+                alert('Model failed to load. Please try again.');
                 return;
             }
 
