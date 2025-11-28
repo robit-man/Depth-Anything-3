@@ -3009,6 +3009,40 @@
             pointCloud.geometry.attributes.color.needsUpdate = true;
         }
 
+        async function syncManualAlignmentToBackend(rotationQuat, anchorY) {
+            if (!rotationQuat) return;
+            const payload = {
+                rotation: [rotationQuat.x, rotationQuat.y, rotationQuat.z, rotationQuat.w],
+                translation: [0, -anchorY, 0]
+            };
+
+            try {
+                const response = await fetch('/api/floor_align/manual', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const txt = await response.text();
+                    console.warn('Manual floor sync failed', response.status, txt);
+                    document.getElementById('model-status-text').textContent = 'Model: Ready (local align only)';
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.pointcloud) {
+                    // Reload to ensure viewer + backend are in sync for export
+                    loadPointCloud(data.pointcloud);
+                }
+                document.getElementById('model-status-text').textContent = 'Model: Ready';
+                console.log('Manual floor alignment synced to backend');
+            } catch (err) {
+                console.warn('Manual floor sync error', err);
+                document.getElementById('model-status-text').textContent = 'Model: Ready (local align only)';
+            }
+        }
+
         function smallestEigenVectorFromCov(xx, xy, xz, yy, yz, zz) {
             // Symmetric 3x3 Jacobi eigen decomposition; return eigenvector of smallest eigenvalue
             let a = [
@@ -3208,6 +3242,9 @@
                     sourcePointCloudData.metadata.num_points = newVertices.length;
                 }
             }
+
+            // Push manual transform to backend so exports match the viewer
+            syncManualAlignmentToBackend(rotationQuat, anchorY);
 
             // Exit selection mode (this will restore original colors)
             toggleManualFloorSelection();

@@ -1946,6 +1946,74 @@ def align_floor():
         "pointcloud": state.current_pointcloud
     })
 
+def _quaternion_to_matrix(q):
+    """Convert quaternion [x, y, z, w] to 3x3 rotation matrix."""
+    if len(q) != 4:
+        raise ValueError("Quaternion must have 4 components [x, y, z, w]")
+    x, y, z, w = [float(v) for v in q]
+    x2, y2, z2 = x + x, y + y, z + z
+    xx, xy, xz = x * x2, x * y2, x * z2
+    yy, yz, zz = y * y2, y * z2, z * z2
+    wx, wy, wz = w * x2, w * y2, w * z2
+    m00 = 1.0 - (yy + zz)
+    m01 = xy - wz
+    m02 = xz + wy
+    m10 = xy + wz
+    m11 = 1.0 - (xx + zz)
+    m12 = yz - wx
+    m20 = xz - wy
+    m21 = yz + wx
+    m22 = 1.0 - (xx + yy)
+    return np.array([
+        [m00, m01, m02],
+        [m10, m11, m12],
+        [m20, m21, m22]
+    ], dtype=np.float32)
+
+@app.route('/api/floor_align/manual', methods=['POST'])
+def manual_floor_align():
+    """Apply a client-provided transform (manual floor align) to current point cloud."""
+    if state.current_pointcloud is None:
+        return jsonify({"error": "No point cloud loaded"}), 400
+
+    payload = request.get_json(force=True, silent=True) or {}
+    matrix = payload.get("matrix")
+    rotation = payload.get("rotation")
+    translation = payload.get("translation", [0.0, 0.0, 0.0])
+
+    try:
+        if matrix is not None:
+            mat = np.array(matrix, dtype=np.float32).reshape(4, 4)
+        elif rotation:
+            rot = _quaternion_to_matrix(rotation)
+            mat = np.eye(4, dtype=np.float32)
+            mat[:3, :3] = rot
+            if translation and len(translation) == 3:
+                mat[:3, 3] = np.array(translation, dtype=np.float32)
+        else:
+            return jsonify({"error": "Provide either 'matrix' (4x4) or 'rotation' + 'translation'"}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Invalid transform payload: {exc}"}), 400
+
+    try:
+        vertices = np.array(state.current_pointcloud["vertices"], dtype=np.float32)
+        ones = np.ones((vertices.shape[0], 1), dtype=np.float32)
+        verts_h = np.concatenate([vertices, ones], axis=1)  # (N,4)
+        transformed = (mat @ verts_h.T).T[:, :3]
+
+        state.current_pointcloud["vertices"] = transformed.tolist()
+        metadata = state.current_pointcloud.setdefault("metadata", {})
+        metadata["floor_aligned"] = True
+        metadata["manual_floor_aligned"] = True
+        metadata["manual_transform_matrix"] = mat.tolist()
+
+        return jsonify({
+            "message": "Manual floor alignment applied",
+            "pointcloud": state.current_pointcloud
+        })
+    except Exception as exc:
+        return jsonify({"error": f"Failed to apply manual transform: {exc}"}), 500
+
 @app.route('/api/video/info', methods=['GET'])
 def get_video_info():
     """Get information about the current video sequence."""
