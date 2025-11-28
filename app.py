@@ -1624,7 +1624,10 @@ def process_file():
                 frames = []
 
                 # Some videos store portrait orientation via rotation metadata; respect it
-                rotation = getattr(clip, "rotation", 0) or 0
+                rotation = getattr(getattr(clip, "reader", None), "rotation", None)
+                if rotation is None:
+                    rotation = getattr(clip, "rotation", 0)
+                rotation = rotation or 0
 
                 for i, frame in enumerate(clip.iter_frames()):
                     if i % sample_rate == 0:
@@ -1638,6 +1641,7 @@ def process_file():
 
                 # Track the native size of each sampled frame so we can restore aspect later
                 input_sizes = [f.size for f in frames]
+                decoded_size = frames[0].size if frames else (getattr(clip, "w", 0), getattr(clip, "h", 0))
 
                 clip.close()
 
@@ -1840,26 +1844,26 @@ def process_file():
                             if frame_conf is not None:
                                 frame_conf = frame_conf[indices]
 
-                    frame_dict = {
-                        "frame_index": i,
-                        "vertices": frame_points.tolist(),
-                        "colors": frame_colors.tolist(),
-                        # Store camera-to-world so downstream viewers/path use correct orientation.
-                        # Row-major (nested lists) is preserved for backward compatibility; flat column-major
-                        # is added for Three.js clients that want direct Matrix4.fromArray usage.
-                        "camera_pose": cam_to_world.tolist(),
-                        "camera_pose_col_major_flat": cam_to_world.T.reshape(-1).tolist(),
-                        "intrinsics": ixt.tolist(),
-                        "image_width": int(orig_w),
-                        "image_height": int(orig_h),
-                        "processed_width": int(proc_w),
-                        "processed_height": int(proc_h),
-                        "aspect_scale": [scale_x, scale_y],
-                        "num_points": len(frame_points)
-                    }
-                    if frame_conf is not None:
-                        frame_dict["confidence"] = frame_conf.tolist()
-                    frame_data_list.append(frame_dict)
+                        frame_dict = {
+                            "frame_index": i,
+                            "vertices": frame_points.tolist(),
+                            "colors": frame_colors.tolist(),
+                            # Store camera-to-world so downstream viewers/path use correct orientation.
+                            # Row-major (nested lists) is preserved for backward compatibility; flat column-major
+                            # is added for Three.js clients that want direct Matrix4.fromArray usage.
+                            "camera_pose": cam_to_world.tolist(),
+                            "camera_pose_col_major_flat": cam_to_world.T.reshape(-1).tolist(),
+                            "intrinsics": ixt.tolist(),
+                            "image_width": int(orig_w),
+                            "image_height": int(orig_h),
+                            "processed_width": int(proc_w),
+                            "processed_height": int(proc_h),
+                            "aspect_scale": [scale_x, scale_y],
+                            "num_points": len(frame_points)
+                        }
+                        if frame_conf is not None:
+                            frame_dict["confidence"] = frame_conf.tolist()
+                        frame_data_list.append(frame_dict)
 
                 all_points = np.vstack(points_list)
                 all_colors = np.vstack(colors_list)
@@ -1889,7 +1893,7 @@ def process_file():
                         "is_video": is_video,
                         "num_frames": len(frame_data_list) if is_video else 1,
                         "video_rotation": int(rotation) if is_video else 0,
-                        "decoded_size": {"width": int(getattr(clip, "w", 0) or 0), "height": int(getattr(clip, "h", 0) or 0)} if is_video else {},
+                        "decoded_size": {"width": int(decoded_size[0]), "height": int(decoded_size[1])} if is_video else {},
                         "input_sizes": [{"width": int(w), "height": int(h)} for (w, h) in input_sizes] if input_sizes else [],
                         "processed_sizes": [{"width": int(w), "height": int(h)} for (w, h) in processed_sizes] if processed_sizes else []
                     }
@@ -1909,7 +1913,7 @@ def process_file():
                             "total_points": len(all_points),
                             "points_per_frame": [f["num_points"] for f in frame_data_list],
                             "video_rotation": int(rotation),
-                            "decoded_size": {"width": int(getattr(clip, "w", 0) or 0), "height": int(getattr(clip, "h", 0) or 0)},
+                            "decoded_size": {"width": int(decoded_size[0]), "height": int(decoded_size[1])},
                             "input_sizes": [
                                 {"width": int(w), "height": int(h)} for (w, h) in input_sizes
                             ],
