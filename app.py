@@ -1745,8 +1745,8 @@ def process_file():
                     y_coords, x_coords = np.mgrid[0:h, 0:w]
 
                     x3d = (x_coords - cx) * depth / fx
-                    y3d = (y_coords - cy) * depth / fy
-                    z3d = depth
+                    y3d = -(y_coords - cy) * depth / fy  # Flip vertical to OpenGL convention (+Y up)
+                    z3d = -depth  # OpenCV forward (+Z) -> OpenGL/Three forward (-Z)
 
                     points = np.stack([x3d, y3d, z3d], axis=-1).reshape(-1, 3)
                     colors = image.reshape(-1, 3)

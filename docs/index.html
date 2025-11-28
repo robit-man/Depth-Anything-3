@@ -103,6 +103,67 @@
             z-index: 1;
         }
 
+        /* Sign flip helper panel */
+        #sign-flip-panel {
+            position: fixed;
+            top: 70px;
+            left: 10px;
+            z-index: 110;
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 10px 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            color: #fff;
+            font-size: 13px;
+            backdrop-filter: blur(8px);
+        }
+
+        #sign-flip-panel h4 {
+            margin: 0;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: #cbd5ff;
+        }
+
+        #sign-flip-panel .flip-buttons {
+            display: flex;
+            gap: 6px;
+        }
+
+        #sign-flip-panel .flip-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        #sign-flip-panel button {
+            padding: 6px 10px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 12px;
+            min-width: 48px;
+            transition: all 0.15s ease;
+        }
+
+        #sign-flip-panel button.active {
+            background: rgba(16, 185, 129, 0.3);
+            border-color: rgba(16, 185, 129, 0.8);
+            color: #e7fff7;
+        }
+
+        #sign-flip-panel button:hover {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: rgba(255, 255, 255, 0.4);
+        }
+
         /* Top button bar */
         .top-bar {
             position: fixed;
@@ -3093,6 +3154,8 @@
                 this.lastPoseDebugFrame = null;
                 this.loggedFirstTransform = false;   // Guard for point cloud transform logging
                 this.pathProgressMarker = null;      // Animated marker showing current position on path
+                this.signFlip = this.loadSignFlip(); // {x,y,z} toggles for manual alignment debugging (points only)
+                this.orientationFlips = this.loadOrientationFlips(); // {yaw,pitch,roll} orientation-only flips per camera
             }
 
             setCombinedPointCloud(mesh, data) {
@@ -3217,14 +3280,36 @@
                     }
                 }
 
-                // Cache c2w matrix for other functions
-                frame._c2w_matrix = c2wMatrix;
-                frame._c2w = c2wMatrix ? c2wMatrix.toArray() : null;
+                // Store original c2w (before orientation correction)
+                const originalC2w = c2wMatrix ? c2wMatrix.clone() : null;
+
+                // Apply manual sign flips/rotations for debugging alignment
+                const correctedC2w = this.applyOrientationToMatrix(c2wMatrix);
+
+                // Cache corrected c2w matrix for other functions
+                frame._c2w_matrix = correctedC2w;
+                frame._c2w = correctedC2w ? correctedC2w.toArray() : null;
+                frame._original_c2w = originalC2w;
 
                 this.currentFrame = frameIndex;
 
-                // Display point cloud (vertices are already in world space, no transformation needed)
-                this.updatePointCloud(frame.vertices, frame.colors, null);
+                // Re-orient points if orientation correction is applied
+                // Points from backend are in world space using original c2w.
+                // We need to rotate them to match the corrected camera orientation.
+                const needsReorientation = originalC2w && correctedC2w &&
+                    !originalC2w.equals(correctedC2w);
+
+                let vertices = frame.vertices;
+                if (needsReorientation) {
+                    vertices = this.reorientPointsForCorrectedPose(
+                        frame.vertices,
+                        originalC2w,
+                        correctedC2w
+                    );
+                }
+
+                // Display point cloud (vertices are in world space)
+                this.updatePointCloud(vertices, frame.colors, null);
 
                 // Debug: Log point cloud bounds for this frame
                 if (POSE_DEBUG_CONFIG.logFirstRawPose && frameIndex === 0 && frame.vertices && frame.vertices.length > 0) {
@@ -3414,13 +3499,14 @@
                         console.log('⚠️ Using row-major poses (slower, requires transpose)');
                     }
 
-                    poseMats = poseMats.filter(Boolean);
+                    poseMats = poseMats.filter(Boolean).map(m => this.applyOrientationToMatrix(m));
 
                     // Extract camera positions
                     let positions = [];
 
                     // Method 1: Use backend-provided positions (most reliable)
                     if (raw.positions && raw.positions.length > 0) {
+                        // Keep positions exactly as provided; only orientation flips are applied separately.
                         positions = raw.positions.map(pos => new THREE.Vector3(...pos));
                         console.log('✅ Using backend-provided positions');
                     }
@@ -3486,6 +3572,7 @@
                 const colorsArray = new Float32Array(colors.flat().map(c => c / 255));
 
                 // If camera pose is provided, transform point cloud from camera space to world space
+                // cameraPose is null for video frames (already in world space)
                 if (cameraPose && positions.length > 0) {
                     positions = this.transformPointsToWorldSpace(positions, cameraPose);
                 }
@@ -3569,6 +3656,165 @@
                 }
 
                 return transformedPositions;
+            }
+
+            getOrientationScale() {
+                // Per-axis flips apply to point vertices only; poses/path positions stay in place.
+                return {
+                    x: this.signFlip.x ?? 1,
+                    y: this.signFlip.y ?? 1,
+                    z: this.signFlip.z ?? 1
+                };
+            }
+
+            applyOrientationToVertices(vertices) {
+                const { x, y, z } = this.getOrientationScale();
+                if (x === 1 && y === 1 && z === 1) return vertices;
+                return vertices.map(v => [
+                    v[0] * x,
+                    v[1] * y,
+                    v[2] * z
+                ]);
+            }
+
+            getOrientationQuaternion() {
+                const yaw180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+                const pitch180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+                const roll180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI);
+                const q = new THREE.Quaternion();
+                if (this.orientationFlips.yaw)   q.premultiply(yaw180);
+                if (this.orientationFlips.pitch) q.premultiply(pitch180);
+                if (this.orientationFlips.roll)  q.premultiply(roll180);
+                return q;
+            }
+
+            applyOrientationToMatrix(matrix) {
+                if (!matrix) return matrix;
+
+                // Decompose to isolate rotation; keep translation untouched.
+                const pos = new THREE.Vector3();
+                const quat = new THREE.Quaternion();
+                const scl = new THREE.Vector3();
+                matrix.decompose(pos, quat, scl);
+
+                // Apply orientation-only flips (no translation change)
+                const orientQuat = this.getOrientationQuaternion();
+                if (!orientQuat.equals(new THREE.Quaternion())) {
+                    quat.premultiply(orientQuat);
+                }
+
+                const result = new THREE.Matrix4();
+                result.compose(pos, quat, scl);
+                return result;
+            }
+
+            /**
+             * Re-orient world-space points to match a corrected camera pose.
+             *
+             * Points were transformed by backend using originalC2w.
+             * We want them oriented as if they were transformed using correctedC2w.
+             *
+             * Strategy:
+             * 1. Extract rotation difference: R_diff = R_corrected * R_original^-1
+             * 2. For each point: rotate around camera position by R_diff
+             *
+             * @param {Array} vertices - Original vertices [[x,y,z], ...]
+             * @param {THREE.Matrix4} originalC2w - Original camera-to-world matrix
+             * @param {THREE.Matrix4} correctedC2w - Orientation-corrected c2w matrix
+             * @returns {Array} Re-oriented vertices
+             */
+            reorientPointsForCorrectedPose(vertices, originalC2w, correctedC2w) {
+                // Extract camera position (same in both matrices - only rotation changes)
+                const camPos = new THREE.Vector3();
+                camPos.setFromMatrixPosition(correctedC2w);
+
+                // Extract rotations
+                const origQuat = new THREE.Quaternion();
+                const corrQuat = new THREE.Quaternion();
+                const tempPos = new THREE.Vector3();
+                const tempScale = new THREE.Vector3();
+
+                originalC2w.decompose(tempPos, origQuat, tempScale);
+                correctedC2w.decompose(tempPos, corrQuat, tempScale);
+
+                // Compute rotation difference: R_diff = R_corrected * R_original^-1
+                const origQuatInv = origQuat.clone().invert();
+                const rotDiff = corrQuat.clone().multiply(origQuatInv);
+
+                // Re-orient each point around camera position
+                const reoriented = vertices.map(v => {
+                    const point = new THREE.Vector3(v[0], v[1], v[2]);
+
+                    // Translate to camera-local space
+                    point.sub(camPos);
+
+                    // Apply rotation difference
+                    point.applyQuaternion(rotDiff);
+
+                    // Translate back to world space
+                    point.add(camPos);
+
+                    return [point.x, point.y, point.z];
+                });
+
+                return reoriented;
+            }
+
+            toggleSignFlip(axis) {
+                if (!['x', 'y', 'z'].includes(axis)) return;
+                this.signFlip[axis] = (this.signFlip[axis] || 1) * -1;
+                try { localStorage.setItem('da3_sign_flips', JSON.stringify(this.signFlip)); } catch (_) {}
+                this.onOrientationChanged();
+            }
+
+            toggleOrientationFlip(axis) {
+                if (!['yaw', 'pitch', 'roll'].includes(axis)) return;
+                this.orientationFlips[axis] = !this.orientationFlips[axis];
+                try { localStorage.setItem('da3_orientation_flips', JSON.stringify(this.orientationFlips)); } catch (_) {}
+                this.onOrientationChanged();
+            }
+
+            onOrientationChanged() {
+                // Clear cached path so we recompute with new transforms
+                this.cameraPathData = null;
+                // Reload current frame and path visuals
+                if (this.currentFrame != null) {
+                    this.loadFrame(this.currentFrame);
+                }
+                if (this.showCameraPath) {
+                    this.loadAndDisplayCameraPath();
+                }
+                updateSignFlipButtons();
+            }
+
+            loadSignFlip() {
+                try {
+                    const stored = localStorage.getItem('da3_sign_flips');
+                    if (stored) {
+                        const parsed = JSON.parse(stored);
+                        return {
+                            x: parsed.x === -1 ? -1 : 1,
+                            y: parsed.y === -1 ? -1 : 1,
+                            z: parsed.z === -1 ? -1 : 1,
+                        };
+                    }
+                } catch (_) {}
+                return { x: 1, y: 1, z: 1 };
+            }
+
+            loadOrientationFlips() {
+                try {
+                    const stored = localStorage.getItem('da3_orientation_flips');
+                    if (stored) {
+                        const parsed = JSON.parse(stored);
+                        return {
+                            yaw: !!parsed.yaw,
+                            pitch: !!parsed.pitch,
+                            roll: !!parsed.roll,
+                        };
+                    }
+                } catch (_) {}
+                return { yaw: false, pitch: false, roll: false };
             }
 
             updateFrameCounter() {
@@ -4508,6 +4754,70 @@
         // Global video player instance
         const videoPlayer = new VideoPlayer();
 
+        // Sign flip helper UI
+        function createSignFlipPanel() {
+            const existing = document.getElementById('sign-flip-panel');
+            if (existing) existing.remove();
+
+            const panel = document.createElement('div');
+            panel.id = 'sign-flip-panel';
+
+            const title = document.createElement('h4');
+            title.textContent = 'Sign Flips';
+            panel.appendChild(title);
+
+            const row = document.createElement('div');
+            row.className = 'flip-buttons';
+            ['x', 'y', 'z'].forEach(axis => {
+                const btn = document.createElement('button');
+                btn.id = `sign-flip-${axis}`;
+                btn.textContent = `${axis.toUpperCase()}: +`;
+                btn.addEventListener('click', () => videoPlayer.toggleSignFlip(axis));
+                row.appendChild(btn);
+            });
+            panel.appendChild(row);
+
+            const row2 = document.createElement('div');
+            row2.className = 'flip-row';
+            [
+                { id: 'yaw', label: 'Yaw 180°' },
+                { id: 'pitch', label: 'Pitch 180°' },
+                { id: 'roll', label: 'Roll 180°' },
+            ].forEach(({ id, label }) => {
+                const btn = document.createElement('button');
+                btn.id = `orientation-flip-${id}`;
+                btn.textContent = label;
+                btn.addEventListener('click', () => videoPlayer.toggleOrientationFlip(id));
+                row2.appendChild(btn);
+            });
+            panel.appendChild(row2);
+
+            const note = document.createElement('div');
+            note.style.fontSize = '11px';
+            note.style.opacity = '0.75';
+            note.textContent = 'Flip axes or yaw to align cloud ↔ path';
+            panel.appendChild(note);
+
+            document.body.appendChild(panel);
+            updateSignFlipButtons();
+        }
+
+        function updateSignFlipButtons() {
+            const flips = videoPlayer.getOrientationScale();
+            ['x', 'y', 'z'].forEach(axis => {
+                const btn = document.getElementById(`sign-flip-${axis}`);
+                if (!btn) return;
+                const sign = flips[axis] === -1 ? '-' : '+';
+                btn.textContent = `${axis.toUpperCase()}: ${sign}`;
+                btn.classList.toggle('active', flips[axis] === -1);
+            });
+            ['yaw', 'pitch', 'roll'].forEach(axis => {
+                const btn = document.getElementById(`orientation-flip-${axis}`);
+                if (!btn) return;
+                btn.classList.toggle('active', !!videoPlayer.orientationFlips[axis]);
+            });
+        }
+
         // ============================================================================
 
         // Initialize on load
@@ -4532,6 +4842,9 @@
             // Initialize Three.js scene
             initThreeJS();
             console.log('Three.js scene initialized');
+
+            // Build sign flip helper UI
+            createSignFlipPanel();
 
             // Setup event handlers
             setupDragAndDrop();
