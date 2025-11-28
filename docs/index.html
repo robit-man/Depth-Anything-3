@@ -1023,7 +1023,14 @@
         let currentModel = null;
         let manualFloorMode = false;
         let selectedPoints = [];
-        let highlightedPoints = null;
+        let hoveredIndices = [];
+        let selectedIndices = [];
+        let hoveredLowestIndex = null;
+        let selectedLowestIndex = null;
+        let selectedAnchorPoint = null;
+        let originalColorArray = null;  // immutable copy of colors (normalized)
+        let baseColorArray = null;       // mutable working copy that includes selections
+        let lastHoverTime = 0;
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
         let originalPointCloudData = null;  // Store original point cloud data for color restoration
@@ -2176,6 +2183,21 @@
                 pointCloud = loadedPoints;
                 scene.add(pointCloud);
 
+                // Prepare color caches for hover/select highlighting
+                if (pointCloud && pointCloud.isPoints && pointCloud.geometry?.attributes?.color) {
+                    const colorAttr = pointCloud.geometry.attributes.color;
+                    originalColorArray = new Float32Array(colorAttr.array);
+                    baseColorArray = new Float32Array(colorAttr.array);
+                } else {
+                    originalColorArray = null;
+                    baseColorArray = null;
+                }
+                hoveredIndices = [];
+                selectedIndices = [];
+                hoveredLowestIndex = null;
+                selectedLowestIndex = null;
+                selectedAnchorPoint = null;
+
                 document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
                 document.getElementById('model-status-text').textContent = 'Model: Ready';
                 document.getElementById('export-btn').disabled = false;
@@ -2608,6 +2630,15 @@
                 geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
                 geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
+                // Cache color buffers for fast restore during hover/select highlighting
+                originalColorArray = new Float32Array(colors);
+                baseColorArray = new Float32Array(colors);
+                hoveredIndices = [];
+                selectedIndices = [];
+                hoveredLowestIndex = null;
+                selectedLowestIndex = null;
+                selectedAnchorPoint = null;
+
                 // Create material
                 const material = createPointsMaterial();
 
@@ -2685,6 +2716,11 @@
         }
 
         // Manual floor selection
+        const FLOOR_HOVER_RADIUS = 0.45;
+        const FLOOR_CLICK_RADIUS = 0.6;
+        const MIN_FLOOR_POINTS = 80;
+        const HOVER_THROTTLE_MS = 60;
+        const PLANE_ALIGN_ROTATION_FACTOR = 1.0; // fully align selected plane to ground
         function toggleManualFloorSelection() {
             manualFloorMode = !manualFloorMode;
             const btn = document.getElementById('manual-floor-btn');
@@ -2694,7 +2730,8 @@
                 btn.style.background = 'rgba(59, 130, 246, 0.5)';
                 btn.style.borderColor = 'rgba(59, 130, 246, 0.8)';
                 text.textContent = 'Click Floor';
-                document.getElementById('model-status-text').textContent = 'Click on floor surface...';
+                document.getElementById('model-status-text').textContent = 'Hover to preview, click to lock floor points';
+                clearHoverHighlight();
                 console.log('Manual floor selection mode: ON');
             } else {
                 btn.style.background = 'rgba(16, 185, 129, 0.2)';
@@ -2705,6 +2742,93 @@
                 selectedPoints = [];
                 console.log('Manual floor selection mode: OFF');
             }
+        }
+
+        function collectPointsWithinRadius(centerPoint, radius, options = {}) {
+            const { collectVectors = true } = options;
+            const points = [];
+            const indices = [];
+            let lowestIndex = null;
+            let lowestY = Infinity;
+            let lowestPoint = null;
+
+            if (!pointCloud || radius <= 0) {
+                return { points, indices, lowestIndex, lowestPoint };
+            }
+
+            const positionAttr = pointCloud.geometry?.attributes?.position;
+            if (!positionAttr || !positionAttr.array) {
+                return { points, indices, lowestIndex, lowestPoint };
+            }
+
+            const positions = positionAttr.array;
+            const radiusSq = radius * radius;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                const x = positions[i];
+                const y = positions[i + 1];
+                const z = positions[i + 2];
+
+                const dx = x - centerPoint.x;
+                const dy = y - centerPoint.y;
+                const dz = z - centerPoint.z;
+                const distSq = dx * dx + dy * dy + dz * dz;
+
+                if (distSq <= radiusSq) {
+                    const idx = i / 3;
+                    indices.push(idx);
+                    if (collectVectors) {
+                        const v = new THREE.Vector3(x, y, z);
+                        points.push(v);
+                        if (y < lowestY) {
+                            lowestPoint = v;
+                        }
+                    } else if (y < lowestY) {
+                        lowestPoint = { x, y, z };
+                    }
+                    if (y < lowestY) {
+                        lowestY = y;
+                        lowestIndex = idx;
+                    }
+                }
+            }
+
+            return { points, indices, lowestIndex, lowestPoint };
+        }
+
+        function onMouseMove(event) {
+            if (!pointCloud) return;
+            if (!manualFloorMode) {
+                clearHoverHighlight();
+                return;
+            }
+
+            const now = performance.now();
+            if (now - lastHoverTime < HOVER_THROTTLE_MS) return;
+            lastHoverTime = now;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(pointCloud, true);
+            if (!intersects.length) {
+                clearHoverHighlight();
+                return;
+            }
+
+            const { indices, lowestIndex } = collectPointsWithinRadius(
+                intersects[0].point,
+                FLOOR_HOVER_RADIUS,
+                { collectVectors: false }
+            );
+
+            if (!indices.length) {
+                clearHoverHighlight();
+                return;
+            }
+
+            applyHoverHighlight(indices, lowestIndex);
         }
 
         function onMouseClick(event) {
@@ -2727,96 +2851,232 @@
                 console.log('Clicked point:', point);
 
                 // Find nearby points
-                findNearbyPoints(point);
+                const { points, indices, lowestIndex, lowestPoint } = collectPointsWithinRadius(
+                    point,
+                    FLOOR_CLICK_RADIUS
+                );
 
-                // Fit plane and align
-                if (selectedPoints.length > 100) {
+                if (!indices.length) {
+                    clearHoverHighlight();
+                    clearHighlightedPoints();
+                    return;
+                }
+
+                selectedPoints = points;
+                selectedAnchorPoint = lowestPoint ? lowestPoint.clone() : null;
+                applySelectionHighlight(indices, lowestIndex);
+
+                const status = `Selected ${indices.length} points (min y anchor shown in white)`;
+                document.getElementById('model-status-text').textContent = status;
+
+                // Fit plane and align once we have enough support
+                if (selectedPoints.length >= MIN_FLOOR_POINTS) {
                     applyManualFloorAlignment();
+                } else {
+                    console.log(`Need at least ${MIN_FLOOR_POINTS} points to fit plane`);
                 }
             }
-        }
-
-        function findNearbyPoints(clickedPoint) {
-            if (!pointCloud) return;
-
-            const positions = pointCloud.geometry.attributes.position.array;
-            const colors = pointCloud.geometry.attributes.color.array;
-
-            const searchRadius = 0.5;  // 0.5 meter radius
-            const nearby = [];
-            const nearbyIndices = [];
-
-            // Find all points within radius
-            for (let i = 0; i < positions.length; i += 3) {
-                const x = positions[i];
-                const y = positions[i + 1];
-                const z = positions[i + 2];
-
-                const dx = x - clickedPoint.x;
-                const dy = y - clickedPoint.y;
-                const dz = z - clickedPoint.z;
-                const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-                if (distance < searchRadius) {
-                    nearby.push(new THREE.Vector3(x, y, z));
-                    nearbyIndices.push(i / 3);
-                }
-            }
-
-            selectedPoints = nearby;
-
-            console.log(`Found ${nearby.length} nearby points within ${searchRadius}m`);
-
-            // Highlight selected points
-            highlightPoints(nearbyIndices, colors);
-        }
-
-        function highlightPoints(indices, originalColors) {
-            if (!pointCloud) return;
-
-            const colors = pointCloud.geometry.attributes.color.array;
-
-            // Reset all colors first
-            for (let i = 0; i < colors.length; i++) {
-                colors[i] = originalColors[i];
-            }
-
-            // Highlight selected points (white)
-            indices.forEach(idx => {
-                colors[idx * 3] = 1.0;      // R
-                colors[idx * 3 + 1] = 1.0;  // G
-                colors[idx * 3 + 2] = 1.0;  // B
-            });
-
-            pointCloud.geometry.attributes.color.needsUpdate = true;
-
-            document.getElementById('model-status-text').textContent =
-                `Selected ${indices.length} points. Processing...`;
         }
 
         function clearHighlightedPoints() {
-            if (!pointCloud || !originalPointCloudData) return;
-
-            const colors = pointCloud.geometry.attributes.color.array;
-            const originalColors = originalPointCloudData.colors;
-            if (!originalColors || !originalColors.length) return;
-            const limit = Math.min(originalColors.length, colors.length / 3);
-
-            // Restore original colors
-            for (let i = 0; i < limit; i++) {
-                for (let j = 0; j < 3; j++) {
-                    colors[i * 3 + j] = originalColors[i][j] / 255;
-                }
+            if (!pointCloud) return;
+            const colorAttr = pointCloud.geometry?.attributes?.color;
+            if (!originalColorArray && colorAttr?.array) {
+                originalColorArray = new Float32Array(colorAttr.array);
             }
+            if (!originalColorArray || !colorAttr?.array) return;
+
+            const colors = colorAttr.array;
+            colors.set(originalColorArray);
+            baseColorArray = new Float32Array(originalColorArray);
+            hoveredIndices = [];
+            selectedIndices = [];
+            hoveredLowestIndex = null;
+            selectedLowestIndex = null;
+            selectedAnchorPoint = null;
+            selectedPoints = [];
 
             pointCloud.geometry.attributes.color.needsUpdate = true;
             console.log('Original colors restored');
         }
 
-        function fitPlaneToPoints(points) {
-            // Fit plane using least squares
-            // Plane equation: ax + by + cz + d = 0
+        function applyHoverHighlight(indices, lowestIndex) {
+            if (!pointCloud || !indices.length) return;
+            const colorAttr = pointCloud.geometry?.attributes?.color;
+            if (!colorAttr || !colorAttr.array) return;
+            const colors = colorAttr.array;
 
+            if (!baseColorArray) {
+                baseColorArray = new Float32Array(colors);
+            }
+            if (!originalColorArray) {
+                originalColorArray = new Float32Array(colors);
+            }
+
+            // Restore previous hover region from base (which already includes selections)
+            if (hoveredIndices.length && baseColorArray) {
+                hoveredIndices.forEach(idx => {
+                    const i3 = idx * 3;
+                    colors[i3] = baseColorArray[i3];
+                    colors[i3 + 1] = baseColorArray[i3 + 1];
+                    colors[i3 + 2] = baseColorArray[i3 + 2];
+                });
+            }
+
+            const hoverColor = [0.8, 0.9, 1.0];
+            const anchorColor = [1.0, 1.0, 1.0];
+
+            indices.forEach(idx => {
+                const i3 = idx * 3;
+                const c = idx === lowestIndex ? anchorColor : hoverColor;
+                colors[i3] = c[0];
+                colors[i3 + 1] = c[1];
+                colors[i3 + 2] = c[2];
+            });
+
+            hoveredIndices = indices;
+            hoveredLowestIndex = lowestIndex;
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+        }
+
+        function clearHoverHighlight() {
+            if (!pointCloud || !hoveredIndices.length) return;
+            const colorAttr = pointCloud.geometry?.attributes?.color;
+            if (!colorAttr || !colorAttr.array) return;
+            const colors = colorAttr.array;
+            const source = baseColorArray || originalColorArray;
+            if (source) {
+                hoveredIndices.forEach(idx => {
+                    const i3 = idx * 3;
+                    colors[i3] = source[i3];
+                    colors[i3 + 1] = source[i3 + 1];
+                    colors[i3 + 2] = source[i3 + 2];
+                });
+            }
+            hoveredIndices = [];
+            hoveredLowestIndex = null;
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+        }
+
+        function applySelectionHighlight(indices, lowestIndex) {
+            if (!pointCloud || !indices.length) return;
+            const colorAttr = pointCloud.geometry?.attributes?.color;
+            if (!colorAttr || !colorAttr.array) return;
+            const colors = colorAttr.array;
+
+            if (!originalColorArray) {
+                originalColorArray = new Float32Array(colors);
+            }
+            if (!baseColorArray) {
+                baseColorArray = new Float32Array(colors);
+            }
+
+            // Restore any previous selection back to original colors
+            if (selectedIndices.length && originalColorArray) {
+                selectedIndices.forEach(idx => {
+                    const i3 = idx * 3;
+                    colors[i3] = originalColorArray[i3];
+                    colors[i3 + 1] = originalColorArray[i3 + 1];
+                    colors[i3 + 2] = originalColorArray[i3 + 2];
+                    if (baseColorArray) {
+                        baseColorArray[i3] = originalColorArray[i3];
+                        baseColorArray[i3 + 1] = originalColorArray[i3 + 1];
+                        baseColorArray[i3 + 2] = originalColorArray[i3 + 2];
+                    }
+                });
+            }
+
+            clearHoverHighlight();
+
+            const selectColor = [0.65, 1.0, 0.7];
+            const anchorColor = [1.0, 1.0, 1.0];
+
+            indices.forEach(idx => {
+                const i3 = idx * 3;
+                const c = idx === lowestIndex ? anchorColor : selectColor;
+                colors[i3] = c[0];
+                colors[i3 + 1] = c[1];
+                colors[i3 + 2] = c[2];
+                if (baseColorArray) {
+                    baseColorArray[i3] = c[0];
+                    baseColorArray[i3 + 1] = c[1];
+                    baseColorArray[i3 + 2] = c[2];
+                }
+            });
+
+            selectedIndices = indices;
+            selectedLowestIndex = lowestIndex;
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+        }
+
+        function smallestEigenVectorFromCov(xx, xy, xz, yy, yz, zz) {
+            // Symmetric 3x3 Jacobi eigen decomposition; return eigenvector of smallest eigenvalue
+            let a = [
+                [xx, xy, xz],
+                [xy, yy, yz],
+                [xz, yz, zz]
+            ];
+            let v = [
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1]
+            ];
+
+            const MAX_ITERS = 20;
+            for (let iter = 0; iter < MAX_ITERS; iter++) {
+                // Find largest off-diagonal element
+                let p = 0, q = 1;
+                let maxOff = Math.abs(a[p][q]);
+                const off02 = Math.abs(a[0][2]);
+                const off12 = Math.abs(a[1][2]);
+                if (off02 > maxOff) { maxOff = off02; p = 0; q = 2; }
+                if (off12 > maxOff) { maxOff = off12; p = 1; q = 2; }
+
+                if (maxOff < 1e-10) break;
+
+                const app = a[p][p];
+                const aqq = a[q][q];
+                const apq = a[p][q];
+                const phi = 0.5 * Math.atan2(2 * apq, aqq - app);
+                const c = Math.cos(phi);
+                const s = Math.sin(phi);
+
+                // Rotate A in p-q plane
+                for (let k = 0; k < 3; k++) {
+                    const apk = a[p][k];
+                    const aqk = a[q][k];
+                    a[p][k] = c * apk - s * aqk;
+                    a[q][k] = s * apk + c * aqk;
+                }
+                for (let k = 0; k < 3; k++) {
+                    const akp = a[k][p];
+                    const akq = a[k][q];
+                    a[k][p] = c * akp - s * akq;
+                    a[k][q] = s * akp + c * akq;
+                }
+                a[p][q] = a[q][p] = 0;
+                a[p][p] = c * c * app - 2 * s * c * apq + s * s * aqq;
+                a[q][q] = s * s * app + 2 * s * c * apq + c * c * aqq;
+
+                // Rotate eigenvector matrix V
+                for (let k = 0; k < 3; k++) {
+                    const vkp = v[k][p];
+                    const vkq = v[k][q];
+                    v[k][p] = c * vkp - s * vkq;
+                    v[k][q] = s * vkp + c * vkq;
+                }
+            }
+
+            const eigenvalues = [a[0][0], a[1][1], a[2][2]];
+            let minIdx = 0;
+            if (eigenvalues[1] < eigenvalues[minIdx]) minIdx = 1;
+            if (eigenvalues[2] < eigenvalues[minIdx]) minIdx = 2;
+
+            return new THREE.Vector3(v[0][minIdx], v[1][minIdx], v[2][minIdx]);
+        }
+
+        function fitPlaneToPoints(points) {
+            // Fit plane using least squares via covariance + eigen decomposition
             const n = points.length;
             if (n < 3) return null;
 
@@ -2842,16 +3102,10 @@
                 zz += dz * dz;
             });
 
-            // Find eigenvector corresponding to smallest eigenvalue
-            // Simplified: assume normal is mostly vertical
-            // Use cross product of two vectors in the plane
-
-            // Get two vectors from centroid to sample points
-            const v1 = new THREE.Vector3().subVectors(points[0], centroid);
-            const v2 = new THREE.Vector3().subVectors(points[Math.floor(n/2)], centroid);
-
-            // Normal is cross product
-            const normal = new THREE.Vector3().crossVectors(v1, v2);
+            const normal = smallestEigenVectorFromCov(xx, xy, xz, yy, yz, zz);
+            if (!normal || !isFinite(normal.lengthSq()) || normal.lengthSq() < 1e-12) {
+                return null;
+            }
             normal.normalize();
 
             // Ensure normal points upward
@@ -2859,15 +3113,15 @@
                 normal.multiplyScalar(-1);
             }
 
-            // Calculate d coefficient
+            // Plane offset
             const d = -normal.dot(centroid);
 
             return { normal, d, centroid };
         }
 
         function applyManualFloorAlignment() {
-            if (selectedPoints.length < 100) {
-                alert('Not enough points selected. Click on a larger floor area.');
+            if (selectedPoints.length < MIN_FLOOR_POINTS) {
+                alert(`Not enough points selected. Click on a larger floor area (need ${MIN_FLOOR_POINTS}+).`);
                 return;
             }
 
@@ -2887,12 +3141,16 @@
 
             // Create rotation to align plane with XZ (y=0)
             const targetNormal = new THREE.Vector3(0, 1, 0);
-            const quaternion = new THREE.Quaternion();
-            quaternion.setFromUnitVectors(plane.normal, targetNormal);
+            const rotationQuat = new THREE.Quaternion().setFromUnitVectors(plane.normal, targetNormal);
 
             // Apply rotation to all points
-            const positions = pointCloud.geometry.attributes.position.array;
-            const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
+            const positionAttr = pointCloud.geometry?.attributes?.position;
+            if (!positionAttr || !positionAttr.array) {
+                alert('Current point cloud does not expose positions for alignment.');
+                return;
+            }
+            const positions = positionAttr.array;
+            const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(rotationQuat);
 
             for (let i = 0; i < positions.length; i += 3) {
                 const point = new THREE.Vector3(
@@ -2908,14 +3166,22 @@
                 positions[i + 2] = point.z;
             }
 
-            // Find lowest point and translate to y=0
-            let minY = Infinity;
-            for (let i = 1; i < positions.length; i += 3) {
-                if (positions[i] < minY) minY = positions[i];
+            // Bias toward vertical displacement: translate so the average of selected points lands at y=0
+            let anchorY = 0;
+            if (selectedPoints.length) {
+                let sumY = 0;
+                selectedPoints.forEach(p => {
+                    const rp = p.clone().applyQuaternion(rotationQuat);
+                    sumY += rp.y;
+                });
+                anchorY = sumY / selectedPoints.length;
+            } else {
+                const rotatedCentroid = plane.centroid.clone().applyQuaternion(rotationQuat);
+                anchorY = rotatedCentroid.y;
             }
 
             for (let i = 1; i < positions.length; i += 3) {
-                positions[i] -= minY;
+                positions[i] -= anchorY;
             }
 
             pointCloud.geometry.attributes.position.needsUpdate = true;
@@ -3079,7 +3345,9 @@
             // Add click listener for manual floor selection
             if (renderer && renderer.domElement) {
                 renderer.domElement.addEventListener('click', onMouseClick, false);
-                console.log('Manual floor selection click handler registered');
+                renderer.domElement.addEventListener('mousemove', onMouseMove, false);
+                renderer.domElement.addEventListener('mouseleave', clearHoverHighlight, false);
+                console.log('Manual floor selection hover + click handlers registered');
             }
         }
 
