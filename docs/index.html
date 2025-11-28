@@ -3156,6 +3156,12 @@
                 this.pathProgressMarker = null;      // Animated marker showing current position on path
                 this.signFlip = this.loadSignFlip(); // {x,y,z} toggles for manual alignment debugging (points only)
                 this.orientationFlips = this.loadOrientationFlips(); // {yaw,pitch,roll} orientation-only flips per camera
+
+                // Scene-wide transformation (applied to entire reconstruction as rigid body)
+                this.sceneTransform = {
+                    translation: { x: 0, y: 0, z: 0 },
+                    rotation: { yaw: 0, pitch: 0, roll: 0 }
+                };
             }
 
             setCombinedPointCloud(mesh, data) {
@@ -3785,6 +3791,124 @@
                     this.loadAndDisplayCameraPath();
                 }
                 updateSignFlipButtons();
+            }
+
+            // ========== SCENE-WIDE TRANSFORMATION ==========
+            // Transform entire reconstruction (camera path + point clouds) as a rigid body
+
+            setSceneTranslation(axis, value) {
+                if (!['x', 'y', 'z'].includes(axis)) return;
+                this.sceneTransform.translation[axis] = value;
+                this.applySceneTransform();
+            }
+
+            setSceneRotation(id, degrees) {
+                if (!['yaw', 'pitch', 'roll'].includes(id)) return;
+                this.sceneTransform.rotation[id] = degrees;
+                this.applySceneTransform();
+            }
+
+            resetSceneTransform() {
+                this.sceneTransform = {
+                    translation: { x: 0, y: 0, z: 0 },
+                    rotation: { yaw: 0, pitch: 0, roll: 0 }
+                };
+                this.applySceneTransform();
+            }
+
+            getSceneTransformMatrix() {
+                const { translation, rotation } = this.sceneTransform;
+
+                // Create translation matrix
+                const T = new THREE.Matrix4().makeTranslation(
+                    translation.x,
+                    translation.y,
+                    translation.z
+                );
+
+                // Create rotation matrices (in degrees, convert to radians)
+                const yawRad = THREE.MathUtils.degToRad(rotation.yaw);
+                const pitchRad = THREE.MathUtils.degToRad(rotation.pitch);
+                const rollRad = THREE.MathUtils.degToRad(rotation.roll);
+
+                const Ry = new THREE.Matrix4().makeRotationY(yawRad);    // Yaw around Y
+                const Rx = new THREE.Matrix4().makeRotationX(pitchRad);  // Pitch around X
+                const Rz = new THREE.Matrix4().makeRotationZ(rollRad);   // Roll around Z
+
+                // Combine: T * Ry * Rx * Rz (rotate first, then translate)
+                const transform = new THREE.Matrix4();
+                transform.multiply(T).multiply(Ry).multiply(Rx).multiply(Rz);
+
+                return transform;
+            }
+
+            applySceneTransform() {
+                const transform = this.getSceneTransformMatrix();
+
+                // Apply to camera path line (includes tube, markers, frustums)
+                if (this.cameraPathLine) {
+                    this.cameraPathLine.matrix.copy(transform);
+                    this.cameraPathLine.matrixAutoUpdate = false;
+                }
+
+                // Apply to all camera frustums
+                if (this.cameraFrustums) {
+                    this.cameraFrustums.forEach(frustum => {
+                        if (frustum.userData && frustum.userData.originalMatrix) {
+                            // Restore original, then apply scene transform
+                            frustum.matrix.copy(frustum.userData.originalMatrix).premultiply(transform);
+                        } else {
+                            // First time: store original matrix
+                            frustum.userData.originalMatrix = frustum.matrix.clone();
+                            frustum.matrix.premultiply(transform);
+                        }
+                        frustum.matrixAutoUpdate = false;
+                    });
+                }
+
+                // Apply to camera origin markers
+                if (this.cameraOrigins) {
+                    this.cameraOrigins.forEach(marker => {
+                        if (marker.userData && marker.userData.originalPosition) {
+                            const pos = marker.userData.originalPosition.clone();
+                            pos.applyMatrix4(transform);
+                            marker.position.copy(pos);
+                        } else {
+                            marker.userData.originalPosition = marker.position.clone();
+                            const pos = marker.position.clone();
+                            pos.applyMatrix4(transform);
+                            marker.position.copy(pos);
+                        }
+                    });
+                }
+
+                // Apply to current point cloud
+                if (this.pointCloudMesh) {
+                    this.pointCloudMesh.matrix.copy(transform);
+                    this.pointCloudMesh.matrixAutoUpdate = false;
+                }
+
+                // Apply to combined point cloud
+                if (this.combinedPointCloudMesh) {
+                    this.combinedPointCloudMesh.matrix.copy(transform);
+                    this.combinedPointCloudMesh.matrixAutoUpdate = false;
+                }
+
+                // Apply to current camera helper
+                if (this.currentCameraHelper) {
+                    if (this.currentCameraHelper.userData && this.currentCameraHelper.userData.originalMatrix) {
+                        this.currentCameraHelper.matrix.copy(this.currentCameraHelper.userData.originalMatrix).premultiply(transform);
+                    } else {
+                        this.currentCameraHelper.userData.originalMatrix = this.currentCameraHelper.matrix.clone();
+                        this.currentCameraHelper.matrix.premultiply(transform);
+                    }
+                    this.currentCameraHelper.matrixAutoUpdate = false;
+                }
+
+                console.log('🌐 Scene transform applied:', {
+                    translation: this.sceneTransform.translation,
+                    rotation: this.sceneTransform.rotation
+                });
             }
 
             loadSignFlip() {
@@ -4819,6 +4943,153 @@
             });
         }
 
+        // Scene Alignment Panel - Global transformation for entire reconstruction
+        function createSceneAlignmentPanel() {
+            const existing = document.getElementById('scene-alignment-panel');
+            if (existing) existing.remove();
+
+            const panel = document.createElement('div');
+            panel.id = 'scene-alignment-panel';
+            panel.style.cssText = `
+                position: fixed;
+                top: 300px;
+                right: 20px;
+                background: rgba(0, 0, 0, 0.85);
+                color: white;
+                padding: 15px;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 12px;
+                z-index: 1000;
+                max-width: 280px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            `;
+
+            const title = document.createElement('h4');
+            title.textContent = '🌐 Scene Alignment';
+            title.style.margin = '0 0 12px 0';
+            title.style.fontSize = '14px';
+            title.style.borderBottom = '1px solid #444';
+            title.style.paddingBottom = '8px';
+            panel.appendChild(title);
+
+            // Translation controls
+            const transTitle = document.createElement('div');
+            transTitle.textContent = 'Translation (meters)';
+            transTitle.style.cssText = 'margin: 10px 0 5px 0; font-size: 11px; opacity: 0.8;';
+            panel.appendChild(transTitle);
+
+            ['x', 'y', 'z'].forEach(axis => {
+                const row = document.createElement('div');
+                row.style.cssText = 'margin: 6px 0; display: flex; align-items: center; gap: 8px;';
+
+                const label = document.createElement('label');
+                label.textContent = `${axis.toUpperCase()}:`;
+                label.style.cssText = 'width: 20px; font-weight: bold;';
+                row.appendChild(label);
+
+                const slider = document.createElement('input');
+                slider.type = 'range';
+                slider.id = `scene-trans-${axis}`;
+                slider.min = '-10';
+                slider.max = '10';
+                slider.step = '0.1';
+                slider.value = '0';
+                slider.style.cssText = 'flex: 1;';
+                slider.addEventListener('input', (e) => {
+                    valueDisplay.textContent = parseFloat(e.target.value).toFixed(1);
+                    videoPlayer.setSceneTranslation(axis, parseFloat(e.target.value));
+                });
+                row.appendChild(slider);
+
+                const valueDisplay = document.createElement('span');
+                valueDisplay.textContent = '0.0';
+                valueDisplay.style.cssText = 'width: 35px; text-align: right; font-size: 11px;';
+                row.appendChild(valueDisplay);
+
+                panel.appendChild(row);
+            });
+
+            // Rotation controls
+            const rotTitle = document.createElement('div');
+            rotTitle.textContent = 'Rotation (degrees)';
+            rotTitle.style.cssText = 'margin: 15px 0 5px 0; font-size: 11px; opacity: 0.8;';
+            panel.appendChild(rotTitle);
+
+            [
+                { id: 'yaw', label: 'Yaw (Y)' },
+                { id: 'pitch', label: 'Pitch (X)' },
+                { id: 'roll', label: 'Roll (Z)' }
+            ].forEach(({ id, label }) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'margin: 6px 0; display: flex; align-items: center; gap: 8px;';
+
+                const labelEl = document.createElement('label');
+                labelEl.textContent = label;
+                labelEl.style.cssText = 'width: 65px; font-size: 11px;';
+                row.appendChild(labelEl);
+
+                const slider = document.createElement('input');
+                slider.type = 'range';
+                slider.id = `scene-rot-${id}`;
+                slider.min = '-180';
+                slider.max = '180';
+                slider.step = '1';
+                slider.value = '0';
+                slider.style.cssText = 'flex: 1;';
+                slider.addEventListener('input', (e) => {
+                    valueDisplay.textContent = e.target.value + '°';
+                    videoPlayer.setSceneRotation(id, parseFloat(e.target.value));
+                });
+                row.appendChild(slider);
+
+                const valueDisplay = document.createElement('span');
+                valueDisplay.textContent = '0°';
+                valueDisplay.style.cssText = 'width: 40px; text-align: right; font-size: 11px;';
+                row.appendChild(valueDisplay);
+
+                panel.appendChild(row);
+            });
+
+            // Reset button
+            const resetBtn = document.createElement('button');
+            resetBtn.textContent = '↺ Reset All';
+            resetBtn.style.cssText = `
+                width: 100%;
+                margin-top: 12px;
+                padding: 8px;
+                background: #444;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+            `;
+            resetBtn.addEventListener('click', () => {
+                ['x', 'y', 'z'].forEach(axis => {
+                    const slider = document.getElementById(`scene-trans-${axis}`);
+                    if (slider) slider.value = 0;
+                    const display = slider?.nextElementSibling;
+                    if (display) display.textContent = '0.0';
+                });
+                ['yaw', 'pitch', 'roll'].forEach(id => {
+                    const slider = document.getElementById(`scene-rot-${id}`);
+                    if (slider) slider.value = 0;
+                    const display = slider?.nextElementSibling;
+                    if (display) display.textContent = '0°';
+                });
+                videoPlayer.resetSceneTransform();
+            });
+            panel.appendChild(resetBtn);
+
+            const note = document.createElement('div');
+            note.style.cssText = 'margin-top: 10px; font-size: 10px; opacity: 0.6; line-height: 1.3;';
+            note.textContent = 'Transforms entire scene (path + clouds) as rigid body';
+            panel.appendChild(note);
+
+            document.body.appendChild(panel);
+        }
+
         // ============================================================================
 
         // Initialize on load
@@ -4844,8 +5115,9 @@
             initThreeJS();
             console.log('Three.js scene initialized');
 
-            // Build sign flip helper UI
+            // Build alignment helper UIs
             createSignFlipPanel();
+            createSceneAlignmentPanel();
 
             // Setup event handlers
             setupDragAndDrop();
