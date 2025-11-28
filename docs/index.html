@@ -3888,10 +3888,16 @@
                     this.pointCloudMesh.matrixAutoUpdate = false;
                 }
 
-                // Apply to combined point cloud
+                // Apply to combined point cloud (video mode)
                 if (this.combinedPointCloudMesh) {
                     this.combinedPointCloudMesh.matrix.copy(transform);
                     this.combinedPointCloudMesh.matrixAutoUpdate = false;
+                }
+
+                // Apply to global point cloud (single image mode)
+                if (typeof pointCloud !== 'undefined' && pointCloud) {
+                    pointCloud.matrix.copy(transform);
+                    pointCloud.matrixAutoUpdate = false;
                 }
 
                 // Apply to current camera helper
