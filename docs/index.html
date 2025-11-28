@@ -3814,6 +3814,7 @@
                         };
                     }
                 } catch (_) {}
+                // All defaults off - coordinate systems are now properly aligned in backend
                 return { yaw: false, pitch: false, roll: false };
             }
 
@@ -4313,9 +4314,9 @@
                     const cx = frame.intrinsics[0][2];
                     const cy = frame.intrinsics[1][2];
 
-                    // Image dimensions (approximate from principal point)
-                    const imageWidth = cx * 2;
-                    const imageHeight = cy * 2;
+                    // Image dimensions (use actual values if available, else approximate from principal point)
+                    const imageWidth = frame.image_width || (cx * 2);
+                    const imageHeight = frame.image_height || (cy * 2);
 
                     // Compute vertical FOV
                     const fovRadians = 2 * Math.atan(imageHeight / (2 * fy));

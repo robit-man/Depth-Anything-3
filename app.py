@@ -1759,17 +1759,33 @@ def process_file():
                         conf_flat = conf_flat[valid]
 
                     # Transform points from camera frame to world frame using extrinsics (assumed world->camera)
-                    cam_pose_w2c = camera_poses[i] if i < len(camera_poses) else np.eye(4, dtype=np.float32)
+                    cam_pose_w2c_opencv = camera_poses[i] if i < len(camera_poses) else np.eye(4, dtype=np.float32)
                     cam_to_world = np.eye(4, dtype=np.float32)
                     points_world = points
                     try:
-                        cam_pose_w2c = np.array(cam_pose_w2c, dtype=np.float32)
-                        if cam_pose_w2c.shape == (3, 4):
-                            cam_pose_w2c = np.vstack([cam_pose_w2c, np.array([0, 0, 0, 1], dtype=np.float32)])
+                        cam_pose_w2c_opencv = np.array(cam_pose_w2c_opencv, dtype=np.float32)
+                        if cam_pose_w2c_opencv.shape == (3, 4):
+                            cam_pose_w2c_opencv = np.vstack([cam_pose_w2c_opencv, np.array([0, 0, 0, 1], dtype=np.float32)])
 
-                        if cam_pose_w2c.shape == (4, 4):
+                        if cam_pose_w2c_opencv.shape == (4, 4):
+                            # Convert extrinsics from OpenCV to OpenGL/Three.js convention
+                            # OpenCV: +X right, +Y down, +Z forward
+                            # OpenGL/Three.js: +X right, +Y up, -Z forward
+                            # Transformation: flip Y and Z axes
+                            opencv_to_opengl = np.array([
+                                [1,  0,  0, 0],
+                                [0, -1,  0, 0],  # Flip Y
+                                [0,  0, -1, 0],  # Flip Z
+                                [0,  0,  0, 1]
+                            ], dtype=np.float32)
+
                             try:
-                                cam_to_world = np.linalg.inv(cam_pose_w2c)  # invert to get camera->world
+                                # First invert to get c2w in OpenCV space
+                                cam_to_world_opencv = np.linalg.inv(cam_pose_w2c_opencv)
+
+                                # Then convert c2w from OpenCV to OpenGL
+                                # c2w_opengl = T @ c2w_opencv @ T^T
+                                cam_to_world = opencv_to_opengl @ cam_to_world_opencv @ opencv_to_opengl
                             except Exception as e:
                                 print(f"[CameraPose] Failed to invert pose for frame {i}: {e}. Using identity.")
                                 cam_to_world = np.eye(4, dtype=np.float32)
@@ -1777,7 +1793,7 @@ def process_file():
                             homog = np.concatenate([points, np.ones((points.shape[0], 1), dtype=np.float32)], axis=1)
                             points_world = (cam_to_world @ homog.T).T[:, :3]
                         else:
-                            print(f"[CameraPose] Invalid pose shape {cam_pose_w2c.shape} for frame {i}; using identity.")
+                            print(f"[CameraPose] Invalid pose shape {cam_pose_w2c_opencv.shape} for frame {i}; using identity.")
                     except Exception as e:
                         print(f"[CameraPose] Error processing pose for frame {i}: {e}; using identity.")
 
@@ -1811,6 +1827,8 @@ def process_file():
                             "camera_pose": cam_to_world.tolist(),
                             "camera_pose_col_major_flat": cam_to_world.T.reshape(-1).tolist(),
                             "intrinsics": ixt.tolist(),
+                            "image_width": int(w),
+                            "image_height": int(h),
                             "num_points": len(frame_points)
                         }
                         if frame_conf is not None:
