@@ -302,6 +302,12 @@ class InputProcessor:
             # Assume HxWxC uint8/RGB
             return Image.fromarray(img).convert("RGB")
         elif isinstance(img, Image.Image):
+            # Honor EXIF orientation so portrait inputs aren't treated as landscape
+            try:
+                from PIL import ImageOps
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
             return img.convert("RGB")
         else:
             raise ValueError(f"Unsupported image type: {type(img)}")

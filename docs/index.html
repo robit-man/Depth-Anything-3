@@ -1,6 +1,6 @@
-
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -33,7 +33,7 @@
             storedApi ||
             deriveDefaultBase()
         );
-        try { localStorage.setItem('da3_api_base', API_BASE); } catch (_) {}
+        try { localStorage.setItem('da3_api_base', API_BASE); } catch (_) { }
         const originalFetch = window.fetch.bind(window);
         window.fetch = (input, init) => {
             if (typeof input === 'string' && input.startsWith('/api/')) {
@@ -43,7 +43,7 @@
         };
         window.setApiBase = (base) => {
             API_BASE = normalizeBase(base);
-            try { localStorage.setItem('da3_api_base', API_BASE); } catch (_) {}
+            try { localStorage.setItem('da3_api_base', API_BASE); } catch (_) { }
             updateApiDisplay();
             console.log('API base set to', API_BASE);
         };
@@ -93,6 +93,17 @@
             color: #fff;
         }
 
+        button .btn-label {
+            display: none;
+            transition-delay: 1s;
+            transition: display 0.2s;
+        }
+
+        button:hover .btn-label {
+            display: inline;
+            transition-delay: 0s;
+        }
+
         /* Full-screen Three.js canvas */
         #canvas-container {
             position: fixed;
@@ -103,36 +114,91 @@
             z-index: 1;
         }
 
-        /* Sign flip helper panel */
-        #sign-flip-panel {
+        /* Side panel stack */
+        .side-panel-stack {
             position: fixed;
-            top: 70px;
-            left: 10px;
-            z-index: 110;
-            background: rgba(0, 0, 0, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            padding: 10px 12px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+            top: 80px;
+            right: 20px;
             display: flex;
             flex-direction: column;
-            gap: 8px;
-            color: #fff;
-            font-size: 13px;
-            backdrop-filter: blur(8px);
+            gap: 20px;
+            z-index: 110;
+            max-width: 320px;
         }
 
-        #sign-flip-panel h4 {
-            margin: 0;
+        .side-panel {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+
+        .side-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 12px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .side-panel-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: 700;
             letter-spacing: 0.02em;
             color: #cbd5ff;
+        }
+
+        .side-panel-toggle {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #fff;
+            width: 32px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.2s ease, background 0.2s ease;
+        }
+
+        .side-panel-toggle:hover {
+            background: rgba(255, 255, 255, 0.16);
+        }
+
+        .side-panel-body {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .side-panel.collapsed .side-panel-body {
+            display: none;
+        }
+
+        .side-panel.collapsed .side-panel-toggle i {
+            transform: rotate(-90deg);
+        }
+
+        /* Sign flip helper panel */
+        #sign-flip-panel {
+            color: #fff;
+            font-size: 13px;
         }
 
         #sign-flip-panel .flip-buttons {
             display: flex;
             gap: 6px;
+            flex-wrap: wrap;
         }
 
         #sign-flip-panel .flip-row {
@@ -244,6 +310,7 @@
             transition: all 0.2s;
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 8px;
         }
 
@@ -265,17 +332,20 @@
                 gap: 10px;
                 padding: 0 12px;
             }
+
             .bottom-bar {
                 height: 64px;
                 gap: 10px;
                 padding: 0 12px;
             }
+
             .top-bar button,
             .bottom-bar button {
                 padding: 10px 12px;
                 min-width: 44px;
                 justify-content: center;
             }
+
             .top-bar .title .title-text,
             .top-bar button .btn-label,
             .bottom-bar button .btn-label {
@@ -647,15 +717,12 @@
 
         /* Status indicator */
         .status-indicator {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            background: rgba(0, 0, 0, 0.8);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            padding: 15px 20px;
-            z-index: 100;
-            min-width: 250px;
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            padding: 0;
+            min-width: 0;
         }
 
         .status-item {
@@ -670,9 +737,17 @@
             font-size: 16px;
         }
 
-        .status-loading { color: #f59e0b; }
-        .status-ready { color: #10b981; }
-        .status-error { color: #ef4444; }
+        .status-loading {
+            color: #f59e0b;
+        }
+
+        .status-ready {
+            color: #10b981;
+        }
+
+        .status-error {
+            color: #ef4444;
+        }
 
         /* Progress bar */
         .progress-bar {
@@ -690,17 +765,74 @@
             transition: width 0.3s;
         }
 
+        .scene-align-section-title {
+            margin: 6px 0 4px;
+            font-size: 11px;
+            opacity: 0.8;
+            letter-spacing: 0.01em;
+        }
+
+        .scene-align-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 0;
+        }
+
+        .scene-align-label {
+            width: 70px;
+            font-size: 11px;
+        }
+
+        .scene-align-axis-label {
+            width: 24px;
+            font-weight: 700;
+        }
+
+        .scene-align-slider {
+            flex: 1;
+        }
+
+        .scene-align-value {
+            width: 40px;
+            text-align: right;
+            font-size: 11px;
+        }
+
+        .scene-align-note {
+            margin-top: 8px;
+            font-size: 10px;
+            opacity: 0.65;
+            line-height: 1.4;
+        }
+
+        #scene-alignment-panel .reset-button {
+            width: 100%;
+            padding: 8px;
+            margin-top: 8px;
+            background: #444;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        #scene-alignment-panel .reset-button:hover {
+            background: #555;
+        }
+
         /* Hidden file input */
         #file-input {
             display: none;
         }
 
         .api-pill {
-            padding: 4px 8px;
+            padding: 10px 20px;
             background: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.12);
             border-radius: 8px;
-            font-size: 12px;
+            font-size: 14px;
             color: #cbd5e1;
             white-space: nowrap;
             cursor: pointer;
@@ -711,8 +843,28 @@
                 display: none;
             }
         }
+
+        /* Aspect ratio log */
+        .aspect-log {
+            position: fixed;
+            left: 20px;
+            bottom: 80px;
+            background: rgba(255, 255, 255, 0.5);
+            color: #000;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 12px;
+            line-height: 1.4;
+            z-index: 120;
+            min-width: 220px;
+            max-width: 280px;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+            pointer-events: none;
+        }
     </style>
 </head>
+
 <body>
     <!-- Full-screen Three.js canvas -->
     <div id="canvas-container"></div>
@@ -720,7 +872,7 @@
     <!-- Top button bar -->
     <div class="top-bar">
         <div class="title">
-            <i class="fas fa-cube"></i> <span class="title-text">Depth Anything 3</span>
+            <i class="fas fa-cube"></i> <span class="title-text"></span>
         </div>
         <div class="api-pill" id="api-base-display"></div>
         <button onclick="showConfigModal()" id="config-btn">
@@ -746,37 +898,46 @@
         <!-- Video Controls (hidden by default) -->
         <div id="video-controls" style="display: none; flex: 1; max-width: 820px; margin-right: 20px;">
             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
-                <button onclick="videoPlayer.play()" id="video-play-btn" style="flex: 0; min-width: 40px; padding: 8px;">
+                <button onclick="videoPlayer.play()" id="video-play-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;">
                     <i class="fas fa-play"></i>
                 </button>
-                <button onclick="videoPlayer.pause()" id="video-pause-btn" style="flex: 0; min-width: 40px; padding: 8px;">
+                <button onclick="videoPlayer.pause()" id="video-pause-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;">
                     <i class="fas fa-pause"></i>
                 </button>
-                <button onclick="videoPlayer.stop()" id="video-stop-btn" style="flex: 0; min-width: 40px; padding: 8px;">
+                <button onclick="videoPlayer.stop()" id="video-stop-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;">
                     <i class="fas fa-stop"></i>
                 </button>
-                <button onclick="videoPlayer.toggleLoop()" id="video-loop-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Loop">
+                <button onclick="videoPlayer.toggleLoop()" id="video-loop-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;" title="Loop">
                     <i class="fas fa-repeat"></i>
                 </button>
-                <button onclick="videoPlayer.toggleCameraPath()" id="video-camera-path-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Show Camera Path">
+                <button onclick="videoPlayer.toggleCameraPath()" id="video-camera-path-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;" title="Show Camera Path">
                     <i class="fas fa-route"></i>
                 </button>
-                <button onclick="videoPlayer.toggleAttachToPath()" id="video-follow-cam-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Attach viewer to camera spline">
+                <button onclick="videoPlayer.toggleAttachToPath()" id="video-follow-cam-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;" title="Attach viewer to camera spline">
                     <i class="fas fa-magnet"></i>
                 </button>
-                <button onclick="videoPlayer.toggleFrameOnly()" id="video-frame-only-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Show only the current frame's point cloud">
+                <button onclick="videoPlayer.toggleFrameOnly()" id="video-frame-only-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;" title="Show only the current frame's point cloud">
                     <i class="fas fa-filter"></i>
                 </button>
-                <button onclick="videoPlayer.playWalkthrough()" id="video-walkthrough-btn" style="flex: 0; min-width: 40px; padding: 8px;" title="Playback along camera path">
+                <button onclick="videoPlayer.playWalkthrough()" id="video-walkthrough-btn"
+                    style="flex: 0; min-width: 40px; padding: 8px;" title="Playback along camera path">
                     <i class="fas fa-person-walking"></i>
                 </button>
-                <span id="frame-counter" style="color: rgba(255,255,255,0.7); font-size: 12px; white-space: nowrap;">0 / 0</span>
+                <span id="frame-counter" style="color: rgba(255,255,255,0.7); font-size: 12px; white-space: nowrap;">0 /
+                    0</span>
             </div>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="frame-slider" min="0" max="0" value="0"
-                       style="flex: 1; accent-color: #3b82f6;"
-                       oninput="videoPlayer.seekToFrame(parseInt(this.value))">
-                <span id="fps-display" style="color: rgba(255,255,255,0.5); font-size: 11px; white-space: nowrap;">15 FPS</span>
+                <input type="range" id="frame-slider" min="0" max="0" value="0" style="flex: 1; accent-color: #3b82f6;"
+                    oninput="videoPlayer.seekToFrame(parseInt(this.value))">
+                <span id="fps-display" style="color: rgba(255,255,255,0.5); font-size: 11px; white-space: nowrap;">15
+                    FPS</span>
             </div>
         </div>
 
@@ -805,10 +966,10 @@
         z-index: 10000;
     ">
         <svg width="80" height="80" style="transform: translate(-40px, -40px);">
-            <circle cx="40" cy="40" r="35" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="3"/>
+            <circle cx="40" cy="40" r="35" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="3" />
             <circle id="progress-circle" cx="40" cy="40" r="35" fill="none" stroke="rgba(59, 130, 246, 0.8)"
-                    stroke-width="3" stroke-dasharray="220" stroke-dashoffset="220"
-                    style="transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.1s linear;"/>
+                stroke-width="3" stroke-dasharray="220" stroke-dashoffset="220"
+                style="transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.1s linear;" />
             <text x="40" y="45" text-anchor="middle" fill="white" font-size="12" font-family="Arial">Hold</text>
         </svg>
     </div>
@@ -879,7 +1040,8 @@
                     </div>
                     <div class="config-row">
                         <label for="max-points-input">Max Points</label>
-                        <input type="number" id="max-points-input" min="10000" max="2000000" step="10000" value="1000000">
+                        <input type="number" id="max-points-input" min="10000" max="2000000" step="10000"
+                            value="1000000">
                     </div>
                     <div class="config-row">
                         <label for="align-scale-checkbox">Align to Input Scale</label>
@@ -917,7 +1079,8 @@
                         <label for="feat-vis-fps-input">Feature Vis FPS</label>
                         <input type="number" id="feat-vis-fps-input" min="1" max="60" step="1" value="15">
                     </div>
-                    <div class="config-subtext">These map directly to DA3 inference options so you can drive the full library feature set.</div>
+                    <div class="config-subtext">These map directly to DA3 inference options so you can drive the full
+                        library feature set.</div>
                 </div>
 
                 <div class="config-section">
@@ -979,7 +1142,8 @@
                     <canvas id="camera-canvas" style="display: none;"></canvas>
                 </div>
                 <div class="camera-controls">
-                    <p class="camera-status info" id="camera-status">Allow camera access to capture a frame or quick video.</p>
+                    <p class="camera-status info" id="camera-status">Allow camera access to capture a frame or quick
+                        video.</p>
                     <div class="camera-actions">
                         <button onclick="captureCameraFrame()" id="capture-frame-btn">
                             <i class="fas fa-camera"></i> Capture Frame
@@ -996,23 +1160,42 @@
         </div>
     </div>
 
-    <!-- Status indicator -->
-    <div class="status-indicator">
-        <div class="status-item">
-            <i class="fas fa-brain status-icon" id="model-status-icon"></i>
-            <span id="model-status-text">Model: Not loaded</span>
-        </div>
-        <div class="progress-bar" id="progress-bar" style="display: none;">
-            <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
-        </div>
-        <div class="status-item">
-            <i class="fas fa-cube status-icon"></i>
-            <span id="points-count">Points: 0</span>
+    <!-- Side panels -->
+    <div class="side-panel-stack" id="side-panel-stack">
+        <div class="side-panel collapsed" id="status-panel">
+            <div class="side-panel-header">
+                <div class="side-panel-title">
+                    <i class="fas fa-signal"></i>
+                    <span>Status</span>
+                </div>
+                <button class="side-panel-toggle" type="button" aria-expanded="false">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+            <div class="side-panel-body">
+                <div class="status-indicator">
+                    <div class="status-item">
+                        <i class="fas fa-brain status-icon" id="model-status-icon"></i>
+                        <span id="model-status-text">Model: Not loaded</span>
+                    </div>
+                    <div class="progress-bar" id="progress-bar" style="display: none;">
+                        <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <div class="status-item">
+                        <i class="fas fa-cube status-icon"></i>
+                        <span id="points-count">Points: 0</span>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
+    <!-- Aspect ratio/debug log -->
+    <div id="aspect-log" class="aspect-log">Aspect log: awaiting data</div>
+
     <!-- Hidden file input -->
-    <input type="file" id="file-input" accept="image/*,video/*,.glb,.gltf,.json" onchange="handleFileSelect(this.files[0])">
+    <input type="file" id="file-input" accept="image/*,video/*,.glb,.gltf,.json"
+        onchange="handleFileSelect(this.files[0])">
 
     <script>
         // Three.js setup
@@ -1059,7 +1242,154 @@
             sparseFillNeighbors: 3,
             sparseFillNewPoints: 5000
         };
-        let viewerConfig = {...defaultConfig};
+        let viewerConfig = { ...defaultConfig };
+
+        function formatAspectText(width, height) {
+            if (!width || !height) return null;
+            const ratio = (width / height).toFixed(3);
+            return `${width}×${height} (ar ${ratio})`;
+        }
+
+        function updateAspectLog(meta = null, frame = null) {
+            const el = document.getElementById('aspect-log');
+            if (!el) return;
+            const resolvedMeta = meta || (activePointCloudData?.metadata) || {};
+            const lines = [];
+
+            if (resolvedMeta.filename) {
+                lines.push(`File: ${resolvedMeta.filename}`);
+            }
+
+            if (resolvedMeta.video_rotation) {
+                lines.push(`Rotation: ${resolvedMeta.video_rotation}°`);
+            }
+
+            if (resolvedMeta.decoded_size && resolvedMeta.decoded_size.width && resolvedMeta.decoded_size.height) {
+                const text = formatAspectText(resolvedMeta.decoded_size.width, resolvedMeta.decoded_size.height);
+                if (text) lines.push(`Decoded: ${text}`);
+            }
+
+            const inputFromFrame = frame && frame.image_width && frame.image_height
+                ? { width: frame.image_width, height: frame.image_height }
+                : null;
+            const inputFromMeta = Array.isArray(resolvedMeta.input_sizes) && resolvedMeta.input_sizes.length > 0
+                ? resolvedMeta.input_sizes[0]
+                : null;
+            const inputSize = inputFromFrame || inputFromMeta;
+            if (inputSize && inputSize.width && inputSize.height) {
+                const text = formatAspectText(inputSize.width, inputSize.height);
+                if (text) lines.push(`Input: ${text}`);
+            }
+
+            const procFromFrame = frame && (frame.processed_width || frame.processed_height)
+                ? {
+                    width: frame.processed_width || frame.image_width,
+                    height: frame.processed_height || frame.image_height
+                }
+                : null;
+            const procFromMeta = Array.isArray(resolvedMeta.processed_sizes) && resolvedMeta.processed_sizes.length > 0
+                ? resolvedMeta.processed_sizes[0]
+                : null;
+            const procSize = procFromFrame || procFromMeta;
+            if (procSize && procSize.width && procSize.height) {
+                const text = formatAspectText(procSize.width, procSize.height);
+                if (text) lines.push(`Processed: ${text}`);
+            }
+
+            if (frame && frame.aspect_scale && frame.aspect_scale.length === 2) {
+                const [sx, sy] = frame.aspect_scale;
+                if (!Number.isNaN(sx) && !Number.isNaN(sy)) {
+                    lines.push(`Scale: x${sx.toFixed(3)} / y${sy.toFixed(3)}`);
+                }
+            }
+
+            if (resolvedMeta.num_frames) {
+                lines.push(`Frames: ${resolvedMeta.num_frames}`);
+            }
+
+            if (!lines.length) {
+                lines.push('Aspect log: awaiting data');
+            }
+            el.innerHTML = lines.join('<br>');
+        }
+
+        function ensureSidePanelStack() {
+            let stack = document.getElementById('side-panel-stack');
+            if (!stack) {
+                stack = document.createElement('div');
+                stack.id = 'side-panel-stack';
+                stack.className = 'side-panel-stack';
+                document.body.appendChild(stack);
+            }
+            return stack;
+        }
+
+        function wireCollapsiblePanel(panel) {
+            if (!panel || panel.dataset.collapsibleWired === 'true') return;
+            const header = panel.querySelector('.side-panel-header');
+            const toggleBtn = panel.querySelector('.side-panel-toggle');
+            if (!header || !toggleBtn) return;
+
+            const syncState = () => {
+                const expanded = !panel.classList.contains('collapsed');
+                toggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            };
+
+            const toggle = () => {
+                panel.classList.toggle('collapsed');
+                syncState();
+            };
+
+            header.addEventListener('click', toggle);
+            toggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggle();
+            });
+
+            syncState();
+            panel.dataset.collapsibleWired = 'true';
+        }
+
+        function createCollapsiblePanelShell(id, title, iconClass = 'fa-ellipsis') {
+            const panel = document.createElement('div');
+            panel.id = id;
+            panel.className = 'side-panel collapsed';
+
+            const header = document.createElement('div');
+            header.className = 'side-panel-header';
+
+            const titleWrap = document.createElement('div');
+            titleWrap.className = 'side-panel-title';
+            if (iconClass) {
+                const icon = document.createElement('i');
+                icon.className = `fas ${iconClass}`;
+                titleWrap.appendChild(icon);
+            }
+            const text = document.createElement('span');
+            text.textContent = title;
+            titleWrap.appendChild(text);
+            header.appendChild(titleWrap);
+
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'side-panel-toggle';
+            toggleBtn.type = 'button';
+            toggleBtn.setAttribute('aria-expanded', 'false');
+            toggleBtn.innerHTML = '<i class="fas fa-chevron-down"></i>';
+            header.appendChild(toggleBtn);
+
+            panel.appendChild(header);
+
+            const body = document.createElement('div');
+            body.className = 'side-panel-body';
+            panel.appendChild(body);
+
+            wireCollapsiblePanel(panel);
+            return { panel, body };
+        }
+
+        function setupCollapsiblePanels() {
+            document.querySelectorAll('.side-panel').forEach(wireCollapsiblePanel);
+        }
 
         // ============================================================================
         // CAMERA POSE COORDINATE SYSTEM DOCUMENTATION
@@ -1289,7 +1619,7 @@
         function setupKeyboardControls() {
             // Keyboard movement state tracking
             document.addEventListener('keydown', (e) => {
-                switch(e.key) {
+                switch (e.key) {
                     case 'w':
                     case 'W':
                     case 'ArrowUp':
@@ -1336,7 +1666,7 @@
             });
 
             document.addEventListener('keyup', (e) => {
-                switch(e.key) {
+                switch (e.key) {
                     case 'w':
                     case 'W':
                     case 'ArrowUp':
@@ -1660,7 +1990,7 @@
         }
 
         function resetConfigToDefaults() {
-            viewerConfig = {...defaultConfig};
+            viewerConfig = { ...defaultConfig };
             syncConfigModalFromState();
             applyPointMaterialSettings();
             rebuildPointCloudWithConfig();
@@ -1719,8 +2049,8 @@
         async function selectModel(modelId) {
             const response = await fetch('/api/models/select', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({model_id: modelId})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_id: modelId })
             });
 
             if (response.ok) {
@@ -1737,7 +2067,7 @@
         // Model loading
         async function loadModel() {
             try {
-                const response = await fetch('/api/load_model', {method: 'POST'});
+                const response = await fetch('/api/load_model', { method: 'POST' });
                 const data = await response.json();
 
                 if (response.ok) {
@@ -2483,7 +2813,7 @@
 
         function rebuildPointCloudWithConfig() {
             if (!sourcePointCloudData) return;
-            loadPointCloud(sourcePointCloudData, {preserveSource: true});
+            loadPointCloud(sourcePointCloudData, { preserveSource: true });
         }
 
         function colorAttrToByteTriplets(attr) {
@@ -2660,6 +2990,7 @@
                 document.getElementById('manual-floor-btn').disabled = false;
                 document.getElementById('camera-mode-btn').disabled = false;
                 document.getElementById('reset-btn').disabled = false;
+                updateAspectLog(processed.metadata || {});
 
                 // Check if this is a video and load video player
                 if (processed.metadata?.is_video) {
@@ -2697,7 +3028,7 @@
         async function alignFloor() {
             try {
                 document.getElementById('model-status-text').textContent = 'Aligning floor...';
-                const response = await fetch('/api/floor_align', {method: 'POST'});
+                const response = await fetch('/api/floor_align', { method: 'POST' });
                 const data = await response.json();
 
                 if (response.ok) {
@@ -3513,19 +3844,20 @@
                     this.setToggleState('video-loop-btn', this.isLooping);
                     this.setToggleState('video-camera-path-btn', this.showCameraPath);
                     this.setToggleState('video-follow-cam-btn', this.followCamera);
-                    this.setToggleState('video-frame-only-btn', this.showFrameOnly);
-                    this.syncCloudVisibility();
+                this.setToggleState('video-frame-only-btn', this.showFrameOnly);
+                this.syncCloudVisibility();
 
-                    // Update UI
-                    document.getElementById('video-controls').style.display = 'flex';
-                    document.getElementById('frame-slider').max = this.videoInfo.num_frames - 1;
-                    document.getElementById('fps-display').textContent = `${this.videoInfo.fps} FPS`;
-                    this.updateFrameCounter();
+                // Update UI
+                document.getElementById('video-controls').style.display = 'flex';
+                document.getElementById('frame-slider').max = this.videoInfo.num_frames - 1;
+                document.getElementById('fps-display').textContent = `${this.videoInfo.fps} FPS`;
+                this.updateFrameCounter();
+                updateAspectLog(this.videoInfo.metadata || activePointCloudData?.metadata || {});
 
-                    // Load first frame
-                    await this.loadFrame(0);
-                    return true;
-                } catch (err) {
+                // Load first frame
+                await this.loadFrame(0);
+                return true;
+            } catch (err) {
                     console.error('Failed to load video:', err);
                     return false;
                 }
@@ -3597,9 +3929,13 @@
                 // Apply manual sign flips/rotations for debugging alignment
                 const correctedC2w = this.applyOrientationToMatrix(c2wMatrix);
 
-                // Cache corrected c2w matrix for other functions
-                frame._c2w_matrix = correctedC2w;
-                frame._c2w = correctedC2w ? correctedC2w.toArray() : null;
+                // Bake scene transform into the pose so playback uses the aligned path
+                const sceneTransform = this.getSceneTransformMatrix();
+                const c2wWithScene = correctedC2w ? sceneTransform.clone().multiply(correctedC2w) : null;
+
+                // Cache corrected + scene-transformed c2w matrix for other functions
+                frame._c2w_matrix = c2wWithScene;
+                frame._c2w = c2wWithScene ? c2wWithScene.toArray() : null;
                 frame._original_c2w = originalC2w;
 
                 this.currentFrame = frameIndex;
@@ -3639,14 +3975,15 @@
                 this.updateFrameCounter();
                 this.updateCameraHelper(frame);
                 this.syncCloudVisibility();
+                updateAspectLog(activePointCloudData?.metadata || {}, frame);
 
                 // Update slider
                 const slider = document.getElementById('frame-slider');
                 if (slider) slider.value = frameIndex;
 
                 // Update viewer camera if following mode is enabled
-                if (this.followCamera && c2wMatrix && frame.intrinsics) {
-                    this.updateViewerCamera(c2wMatrix, frame.intrinsics, { frameIndex });
+                if (this.followCamera && frame._c2w_matrix && frame.intrinsics) {
+                    this.updateViewerCamera(frame._c2w_matrix, frame.intrinsics, { frameIndex });
                 }
 
                 // Highlight current camera frustum
@@ -3656,6 +3993,9 @@
 
                 // Update progress marker along camera path
                 this.updatePathProgressMarker(frameIndex);
+
+                // Ensure newly created objects honor the current scene transform
+                this.applySceneTransform();
 
                 // Preload next batch if needed
                 if ((frameIndex + 1) % this.bufferSize === 0) {
@@ -3841,9 +4181,7 @@
                     if (allAtOrigin) {
                         console.error('❌ All camera positions are at origin! Check pose inversion.');
                     } else if (positions.length > 0) {
-                        console.log(`📍 Camera positions: ${positions.length} frames, range: ${
-                            Math.min(...positions.map(p => p.length())).toFixed(2)} - ${
-                            Math.max(...positions.map(p => p.length())).toFixed(2)} units from origin`);
+                        console.log(`📍 Camera positions: ${positions.length} frames, range: ${Math.min(...positions.map(p => p.length())).toFixed(2)} - ${Math.max(...positions.map(p => p.length())).toFixed(2)} units from origin`);
                     }
 
                     // Build smooth spline for path interpolation
@@ -3993,9 +4331,9 @@
                 const pitch180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
                 const roll180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI);
                 const q = new THREE.Quaternion();
-                if (this.orientationFlips.yaw)   q.premultiply(yaw180);
+                if (this.orientationFlips.yaw) q.premultiply(yaw180);
                 if (this.orientationFlips.pitch) q.premultiply(pitch180);
-                if (this.orientationFlips.roll)  q.premultiply(roll180);
+                if (this.orientationFlips.roll) q.premultiply(roll180);
                 return q;
             }
 
@@ -4074,14 +4412,14 @@
             toggleSignFlip(axis) {
                 if (!['x', 'y', 'z'].includes(axis)) return;
                 this.signFlip[axis] = (this.signFlip[axis] || 1) * -1;
-                try { localStorage.setItem('da3_sign_flips', JSON.stringify(this.signFlip)); } catch (_) {}
+                try { localStorage.setItem('da3_sign_flips', JSON.stringify(this.signFlip)); } catch (_) { }
                 this.onOrientationChanged();
             }
 
             toggleOrientationFlip(axis) {
                 if (!['yaw', 'pitch', 'roll'].includes(axis)) return;
                 this.orientationFlips[axis] = !this.orientationFlips[axis];
-                try { localStorage.setItem('da3_orientation_flips', JSON.stringify(this.orientationFlips)); } catch (_) {}
+                try { localStorage.setItem('da3_orientation_flips', JSON.stringify(this.orientationFlips)); } catch (_) { }
                 this.onOrientationChanged();
             }
 
@@ -4205,6 +4543,19 @@
                     pointCloud.matrixAutoUpdate = false;
                 }
 
+                // Apply to animated progress marker
+                if (this.pathProgressMarker) {
+                    if (this.pathProgressMarker.userData && this.pathProgressMarker.userData.originalPosition) {
+                        const base = this.pathProgressMarker.userData.originalPosition.clone();
+                        base.applyMatrix4(transform);
+                        this.pathProgressMarker.position.copy(base);
+                    } else {
+                        this.pathProgressMarker.userData.originalPosition = this.pathProgressMarker.position.clone();
+                        const base = this.pathProgressMarker.position.clone().applyMatrix4(transform);
+                        this.pathProgressMarker.position.copy(base);
+                    }
+                }
+
                 // Apply to current camera helper
                 if (this.currentCameraHelper) {
                     if (this.currentCameraHelper.userData && this.currentCameraHelper.userData.originalMatrix) {
@@ -4233,7 +4584,7 @@
                             z: parsed.z === -1 ? -1 : 1,
                         };
                     }
-                } catch (_) {}
+                } catch (_) { }
                 return { x: 1, y: 1, z: 1 };
             }
 
@@ -4248,7 +4599,7 @@
                             roll: !!parsed.roll,
                         };
                     }
-                } catch (_) {}
+                } catch (_) { }
                 // All defaults off - coordinate systems are now properly aligned in backend
                 return { yaw: false, pitch: false, roll: false };
             }
@@ -4376,7 +4727,7 @@
                     );
                     if (keyframePositions.length > 1) {
                         console.log('Last position:',
-                            `(${keyframePositions[keyframePositions.length-1].x.toFixed(3)}, ${keyframePositions[keyframePositions.length-1].y.toFixed(3)}, ${keyframePositions[keyframePositions.length-1].z.toFixed(3)})`
+                            `(${keyframePositions[keyframePositions.length - 1].x.toFixed(3)}, ${keyframePositions[keyframePositions.length - 1].y.toFixed(3)}, ${keyframePositions[keyframePositions.length - 1].z.toFixed(3)})`
                         );
 
                         // Show several intermediate positions
@@ -4394,7 +4745,7 @@
                         // Calculate path statistics
                         const distances = [];
                         for (let i = 1; i < keyframePositions.length; i++) {
-                            const dist = keyframePositions[i].distanceTo(keyframePositions[i-1]);
+                            const dist = keyframePositions[i].distanceTo(keyframePositions[i - 1]);
                             distances.push(dist);
                         }
                         const totalDistance = distances.reduce((a, b) => a + b, 0);
@@ -4404,7 +4755,7 @@
                         console.log(`Average step: ${avgStepDistance.toFixed(3)} meters`);
                         console.log(`Direction from start to end:`, (() => {
                             const dir = new THREE.Vector3().subVectors(
-                                keyframePositions[keyframePositions.length-1],
+                                keyframePositions[keyframePositions.length - 1],
                                 keyframePositions[0]
                             ).normalize();
                             return `(${dir.x.toFixed(2)}, ${dir.y.toFixed(2)}, ${dir.z.toFixed(2)})`;
@@ -4706,6 +5057,9 @@
 
                     scene.add(this.pathProgressMarker);
                     console.log('✅ Added animated progress marker (yellow sphere)');
+
+                    // Sync all newly created helpers/meshes to the current scene transform
+                    this.applySceneTransform();
 
                     // ========== SUMMARY ==========
                     console.group('📹 Camera Path Visualization Complete');
@@ -5086,7 +5440,9 @@
 
                 // Update marker position
                 const pos = positions[clampedIndex];
-                this.pathProgressMarker.position.set(pos[0], pos[1], pos[2]);
+                const sceneTransform = this.getSceneTransformMatrix();
+                const vec = new THREE.Vector3(pos[0], pos[1], pos[2]).applyMatrix4(sceneTransform);
+                this.pathProgressMarker.position.set(vec.x, vec.y, vec.z);
 
                 // Pulse animation based on playback state
                 if (this.isPlaying) {
@@ -5195,12 +5551,7 @@
             const existing = document.getElementById('sign-flip-panel');
             if (existing) existing.remove();
 
-            const panel = document.createElement('div');
-            panel.id = 'sign-flip-panel';
-
-            const title = document.createElement('h4');
-            title.textContent = 'Sign Flips';
-            panel.appendChild(title);
+            const { panel, body } = createCollapsiblePanelShell('sign-flip-panel', 'Sign Flips', 'fa-up-down-left-right');
 
             const row = document.createElement('div');
             row.className = 'flip-buttons';
@@ -5211,7 +5562,7 @@
                 btn.addEventListener('click', () => videoPlayer.toggleSignFlip(axis));
                 row.appendChild(btn);
             });
-            panel.appendChild(row);
+            body.appendChild(row);
 
             const row2 = document.createElement('div');
             row2.className = 'flip-row';
@@ -5226,15 +5577,15 @@
                 btn.addEventListener('click', () => videoPlayer.toggleOrientationFlip(id));
                 row2.appendChild(btn);
             });
-            panel.appendChild(row2);
+            body.appendChild(row2);
 
             const note = document.createElement('div');
             note.style.fontSize = '11px';
             note.style.opacity = '0.75';
             note.textContent = 'Flip axes or yaw to align cloud ↔ path';
-            panel.appendChild(note);
+            body.appendChild(note);
 
-            document.body.appendChild(panel);
+            ensureSidePanelStack().appendChild(panel);
             updateSignFlipButtons();
         }
 
@@ -5259,45 +5610,27 @@
             const existing = document.getElementById('scene-alignment-panel');
             if (existing) existing.remove();
 
-            const panel = document.createElement('div');
-            panel.id = 'scene-alignment-panel';
-            panel.style.cssText = `
-                position: fixed;
-                top: 300px;
-                right: 20px;
-                background: rgba(0, 0, 0, 0.85);
-                color: white;
-                padding: 15px;
-                border-radius: 8px;
-                font-family: monospace;
-                font-size: 12px;
-                z-index: 1000;
-                max-width: 280px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-            `;
-
-            const title = document.createElement('h4');
-            title.textContent = '🌐 Scene Alignment';
-            title.style.margin = '0 0 12px 0';
-            title.style.fontSize = '14px';
-            title.style.borderBottom = '1px solid #444';
-            title.style.paddingBottom = '8px';
-            panel.appendChild(title);
+            const { panel, body } = createCollapsiblePanelShell('scene-alignment-panel', 'Scene Alignment', 'fa-globe');
+            const stack = ensureSidePanelStack();
 
             // Translation controls
             const transTitle = document.createElement('div');
             transTitle.textContent = 'Translation (meters)';
-            transTitle.style.cssText = 'margin: 10px 0 5px 0; font-size: 11px; opacity: 0.8;';
-            panel.appendChild(transTitle);
+            transTitle.className = 'scene-align-section-title';
+            body.appendChild(transTitle);
 
             ['x', 'y', 'z'].forEach(axis => {
                 const row = document.createElement('div');
-                row.style.cssText = 'margin: 6px 0; display: flex; align-items: center; gap: 8px;';
+                row.className = 'scene-align-row';
 
-                const label = document.createElement('label');
+                const label = document.createElement('div');
                 label.textContent = `${axis.toUpperCase()}:`;
-                label.style.cssText = 'width: 20px; font-weight: bold;';
+                label.className = 'scene-align-axis-label';
                 row.appendChild(label);
+
+                const valueDisplay = document.createElement('span');
+                valueDisplay.className = 'scene-align-value';
+                valueDisplay.textContent = '0.0';
 
                 const slider = document.createElement('input');
                 slider.type = 'range';
@@ -5306,26 +5639,23 @@
                 slider.max = '10';
                 slider.step = '0.1';
                 slider.value = '0';
-                slider.style.cssText = 'flex: 1;';
+                slider.className = 'scene-align-slider';
                 slider.addEventListener('input', (e) => {
                     valueDisplay.textContent = parseFloat(e.target.value).toFixed(1);
                     videoPlayer.setSceneTranslation(axis, parseFloat(e.target.value));
                 });
                 row.appendChild(slider);
 
-                const valueDisplay = document.createElement('span');
-                valueDisplay.textContent = '0.0';
-                valueDisplay.style.cssText = 'width: 35px; text-align: right; font-size: 11px;';
                 row.appendChild(valueDisplay);
 
-                panel.appendChild(row);
+                body.appendChild(row);
             });
 
             // Rotation controls
             const rotTitle = document.createElement('div');
             rotTitle.textContent = 'Rotation (degrees)';
-            rotTitle.style.cssText = 'margin: 15px 0 5px 0; font-size: 11px; opacity: 0.8;';
-            panel.appendChild(rotTitle);
+            rotTitle.className = 'scene-align-section-title';
+            body.appendChild(rotTitle);
 
             [
                 { id: 'yaw', label: 'Yaw (Y)' },
@@ -5333,12 +5663,16 @@
                 { id: 'roll', label: 'Roll (Z)' }
             ].forEach(({ id, label }) => {
                 const row = document.createElement('div');
-                row.style.cssText = 'margin: 6px 0; display: flex; align-items: center; gap: 8px;';
+                row.className = 'scene-align-row';
 
-                const labelEl = document.createElement('label');
+                const labelEl = document.createElement('div');
                 labelEl.textContent = label;
-                labelEl.style.cssText = 'width: 65px; font-size: 11px;';
+                labelEl.className = 'scene-align-label';
                 row.appendChild(labelEl);
+
+                const valueDisplay = document.createElement('span');
+                valueDisplay.className = 'scene-align-value';
+                valueDisplay.textContent = '0°';
 
                 const slider = document.createElement('input');
                 slider.type = 'range';
@@ -5347,35 +5681,22 @@
                 slider.max = '180';
                 slider.step = '1';
                 slider.value = '0';
-                slider.style.cssText = 'flex: 1;';
+                slider.className = 'scene-align-slider';
                 slider.addEventListener('input', (e) => {
                     valueDisplay.textContent = e.target.value + '°';
                     videoPlayer.setSceneRotation(id, parseFloat(e.target.value));
                 });
                 row.appendChild(slider);
 
-                const valueDisplay = document.createElement('span');
-                valueDisplay.textContent = '0°';
-                valueDisplay.style.cssText = 'width: 40px; text-align: right; font-size: 11px;';
                 row.appendChild(valueDisplay);
 
-                panel.appendChild(row);
+                body.appendChild(row);
             });
 
             // Reset button
             const resetBtn = document.createElement('button');
             resetBtn.textContent = '↺ Reset All';
-            resetBtn.style.cssText = `
-                width: 100%;
-                margin-top: 12px;
-                padding: 8px;
-                background: #444;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 12px;
-            `;
+            resetBtn.className = 'reset-button';
             resetBtn.addEventListener('click', () => {
                 ['x', 'y', 'z'].forEach(axis => {
                     const slider = document.getElementById(`scene-trans-${axis}`);
@@ -5391,14 +5712,14 @@
                 });
                 videoPlayer.resetSceneTransform();
             });
-            panel.appendChild(resetBtn);
+            body.appendChild(resetBtn);
 
             const note = document.createElement('div');
-            note.style.cssText = 'margin-top: 10px; font-size: 10px; opacity: 0.6; line-height: 1.3;';
+            note.className = 'scene-align-note';
             note.textContent = 'Transforms entire scene (path + clouds) as rigid body';
-            panel.appendChild(note);
+            body.appendChild(note);
 
-            document.body.appendChild(panel);
+            stack.appendChild(panel);
         }
 
         // ============================================================================
@@ -5407,6 +5728,7 @@
         window.addEventListener('DOMContentLoaded', async () => {
             console.log('Initializing Depth Anything 3 UI...');
 
+            setupCollapsiblePanels();
             updateApiDisplay();
             const apiPill = document.getElementById('api-base-display');
             if (apiPill) {
@@ -5446,4 +5768,5 @@
         });
     </script>
 </body>
+
 </html>

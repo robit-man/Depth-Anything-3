@@ -1612,6 +1612,8 @@ def process_file():
         try:
             file_ext = filepath.suffix.lower()
             is_video = file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
+            input_sizes = []
+            processed_sizes = []
 
             if is_video:
                 from moviepy.editor import VideoFileClip
@@ -1621,11 +1623,21 @@ def process_file():
                 sample_rate = max(1, int(fps * 0.5))
                 frames = []
 
+                # Some videos store portrait orientation via rotation metadata; respect it
+                rotation = getattr(clip, "rotation", 0) or 0
+
                 for i, frame in enumerate(clip.iter_frames()):
                     if i % sample_rate == 0:
-                        frames.append(Image.fromarray(frame))
+                        if rotation in {90, 270}:
+                            k = rotation // 90
+                            frame = np.rot90(frame, k)
+                        pil_frame = Image.fromarray(frame)
+                        frames.append(pil_frame)
                     if len(frames) >= 20:
                         break
+
+                # Track the native size of each sampled frame so we can restore aspect later
+                input_sizes = [f.size for f in frames]
 
                 clip.close()
 
@@ -1643,6 +1655,7 @@ def process_file():
                 )
             else:
                 img = Image.open(filepath).convert('RGB')
+                input_sizes = [img.size]
 
                 prediction = state.model.inference(
                     image=[img],
@@ -1737,11 +1750,21 @@ def process_file():
                     if confidence_maps is not None and i < len(confidence_maps):
                         conf_map = confidence_maps[i]
 
-                    ixt = prediction.intrinsics[i]
+                    # Adjust intrinsics back to the native frame size to preserve aspect ratio
+                    ixt = np.array(prediction.intrinsics[i], dtype=np.float32)
+                    proc_h, proc_w = depth.shape
+                    orig_w, orig_h = input_sizes[i] if input_sizes and i < len(input_sizes) else (proc_w, proc_h)
+                    scale_x = float(orig_w) / float(proc_w)
+                    scale_y = float(orig_h) / float(proc_h)
+                    ixt[0, 0] *= scale_x  # fx
+                    ixt[0, 2] *= scale_x  # cx
+                    ixt[1, 1] *= scale_y  # fy
+                    ixt[1, 2] *= scale_y  # cy
                     fx, fy = ixt[0, 0], ixt[1, 1]
                     cx, cy = ixt[0, 2], ixt[1, 2]
 
-                    h, w = depth.shape
+                    h, w = proc_h, proc_w
+                    processed_sizes.append((w, h))
                     y_coords, x_coords = np.mgrid[0:h, 0:w]
 
                     x3d = (x_coords - cx) * depth / fx
@@ -1817,23 +1840,26 @@ def process_file():
                             if frame_conf is not None:
                                 frame_conf = frame_conf[indices]
 
-                        frame_dict = {
-                            "frame_index": i,
-                            "vertices": frame_points.tolist(),
-                            "colors": frame_colors.tolist(),
-                            # Store camera-to-world so downstream viewers/path use correct orientation.
-                            # Row-major (nested lists) is preserved for backward compatibility; flat column-major
-                            # is added for Three.js clients that want direct Matrix4.fromArray usage.
-                            "camera_pose": cam_to_world.tolist(),
-                            "camera_pose_col_major_flat": cam_to_world.T.reshape(-1).tolist(),
-                            "intrinsics": ixt.tolist(),
-                            "image_width": int(w),
-                            "image_height": int(h),
-                            "num_points": len(frame_points)
-                        }
-                        if frame_conf is not None:
-                            frame_dict["confidence"] = frame_conf.tolist()
-                        frame_data_list.append(frame_dict)
+                    frame_dict = {
+                        "frame_index": i,
+                        "vertices": frame_points.tolist(),
+                        "colors": frame_colors.tolist(),
+                        # Store camera-to-world so downstream viewers/path use correct orientation.
+                        # Row-major (nested lists) is preserved for backward compatibility; flat column-major
+                        # is added for Three.js clients that want direct Matrix4.fromArray usage.
+                        "camera_pose": cam_to_world.tolist(),
+                        "camera_pose_col_major_flat": cam_to_world.T.reshape(-1).tolist(),
+                        "intrinsics": ixt.tolist(),
+                        "image_width": int(orig_w),
+                        "image_height": int(orig_h),
+                        "processed_width": int(proc_w),
+                        "processed_height": int(proc_h),
+                        "aspect_scale": [scale_x, scale_y],
+                        "num_points": len(frame_points)
+                    }
+                    if frame_conf is not None:
+                        frame_dict["confidence"] = frame_conf.tolist()
+                    frame_data_list.append(frame_dict)
 
                 all_points = np.vstack(points_list)
                 all_colors = np.vstack(colors_list)
@@ -1861,7 +1887,11 @@ def process_file():
                         "resolution": resolution,
                         "filename": filename,
                         "is_video": is_video,
-                        "num_frames": len(frame_data_list) if is_video else 1
+                        "num_frames": len(frame_data_list) if is_video else 1,
+                        "video_rotation": int(rotation) if is_video else 0,
+                        "decoded_size": {"width": int(getattr(clip, "w", 0) or 0), "height": int(getattr(clip, "h", 0) or 0)} if is_video else {},
+                        "input_sizes": [{"width": int(w), "height": int(h)} for (w, h) in input_sizes] if input_sizes else [],
+                        "processed_sizes": [{"width": int(w), "height": int(h)} for (w, h) in processed_sizes] if processed_sizes else []
                     }
                 }
                 if include_confidence and all_conf is not None:
@@ -1877,7 +1907,16 @@ def process_file():
                             "filename": filename,
                             "resolution": resolution,
                             "total_points": len(all_points),
-                            "points_per_frame": [f["num_points"] for f in frame_data_list]
+                            "points_per_frame": [f["num_points"] for f in frame_data_list],
+                            "video_rotation": int(rotation),
+                            "decoded_size": {"width": int(getattr(clip, "w", 0) or 0), "height": int(getattr(clip, "h", 0) or 0)},
+                            "input_sizes": [
+                                {"width": int(w), "height": int(h)} for (w, h) in input_sizes
+                            ],
+                            "processed_sizes": [
+                                {"width": int(fd.get("processed_width", 0)), "height": int(fd.get("processed_height", 0))}
+                                for fd in frame_data_list
+                            ],
                         }
                     }
 
