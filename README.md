@@ -1,5 +1,7 @@
 # Depth Anything 3 Wrapper and restful endpoints + Jetson AARCH64 Support!
 
+_wrestled with tortch seclection and build so you dont have to!_
+
 To evaluate all inclusive single entrypoint service + frontend run (non jetson):
 ```bash
 python3 main.py
