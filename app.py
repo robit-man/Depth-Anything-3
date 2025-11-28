@@ -1628,6 +1628,10 @@ def process_file():
                 if rotation is None:
                     rotation = getattr(clip, "rotation", 0)
                 rotation = rotation or 0
+                try:
+                    rotation = int(rotation)
+                except Exception:
+                    rotation = 0
 
                 for i, frame in enumerate(clip.iter_frames()):
                     if i % sample_rate == 0:

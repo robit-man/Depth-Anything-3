@@ -843,23 +843,62 @@
             }
         }
 
-        /* Aspect ratio log */
-        .aspect-log {
-            position: fixed;
-            left: 20px;
-            bottom: 80px;
-            background: rgba(255, 255, 255, 0.5);
-            color: #000;
-            padding: 10px 12px;
-            border-radius: 10px;
+        .media-panel-info {
             font-size: 12px;
-            line-height: 1.4;
-            z-index: 120;
-            min-width: 220px;
-            max-width: 280px;
-            backdrop-filter: blur(4px);
-            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
-            pointer-events: none;
+            line-height: 1.5;
+            color: #dce3ff;
+        }
+
+        .media-override-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .media-override-row label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #cbd5ff;
+        }
+
+        .media-override-row input {
+            width: 80px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.06);
+            color: #fff;
+            font-size: 12px;
+        }
+
+        .media-panel-preview {
+            margin-top: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            max-height: 320px;
+            overflow: hidden;
+        }
+
+        .media-panel-preview video,
+        .media-panel-preview img {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: #000;
+        }
+
+        .media-rotate-90 {
+            transform: rotate(90deg);
         }
     </style>
 </head>
@@ -1187,10 +1226,31 @@
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Aspect ratio/debug log -->
-    <div id="aspect-log" class="aspect-log">Aspect log: awaiting data</div>
+        <div class="side-panel collapsed" id="media-panel">
+            <div class="side-panel-header">
+                <div class="side-panel-title">
+                    <i class="fas fa-photo-film"></i>
+                    <span>Media</span>
+                </div>
+                <button class="side-panel-toggle" type="button" aria-expanded="false">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+            <div class="side-panel-body">
+                <div class="media-override-row">
+                    <label>W
+                        <input type="number" id="media-override-width" min="1" placeholder="width">
+                    </label>
+                    <label>H
+                        <input type="number" id="media-override-height" min="1" placeholder="height">
+                    </label>
+                </div>
+                <div id="media-info-text" class="media-panel-info">No media loaded</div>
+                <div id="media-preview" class="media-panel-preview"></div>
+            </div>
+        </div>
+    </div>
 
     <!-- Hidden file input -->
     <input type="file" id="file-input" accept="image/*,video/*,.glb,.gltf,.json"
@@ -1242,6 +1302,17 @@
             sparseFillNewPoints: 5000
         };
         let viewerConfig = { ...defaultConfig };
+        const mediaState = {
+            url: null,
+            type: null,
+            name: null,
+            rotation: 0,
+            overrideWidth: null,
+            overrideHeight: null,
+            naturalSize: null,
+            renderSize: null,
+            containerSize: null
+        };
 
         function formatAspectText(width, height) {
             if (!width || !height) return null;
@@ -1249,21 +1320,17 @@
             return `${width}×${height} (ar ${ratio})`;
         }
 
-        function updateAspectLog(meta = null, frame = null) {
-            const el = document.getElementById('aspect-log');
-            if (!el) return;
-            const resolvedMeta = meta || (activePointCloudData?.metadata) || {};
+        function renderMediaPanel(meta = null, frame = null, skipPreview = false) {
+            const resolvedMeta = meta || activePointCloudData?.metadata || {};
+            const infoEl = document.getElementById('media-info-text');
+            const previewEl = document.getElementById('media-preview');
+            if (!infoEl || !previewEl) return;
+
             const lines = [];
+            const filename = mediaState.name || resolvedMeta.filename || 'Unknown';
+            lines.push(`File: ${filename}`);
 
-            if (resolvedMeta.filename) {
-                lines.push(`File: ${resolvedMeta.filename}`);
-            }
-
-            if (resolvedMeta.video_rotation) {
-                lines.push(`Rotation: ${resolvedMeta.video_rotation}°`);
-            }
-
-            if (resolvedMeta.decoded_size && resolvedMeta.decoded_size.width && resolvedMeta.decoded_size.height) {
+            if (resolvedMeta.decoded_size?.width && resolvedMeta.decoded_size?.height) {
                 const text = formatAspectText(resolvedMeta.decoded_size.width, resolvedMeta.decoded_size.height);
                 if (text) lines.push(`Decoded: ${text}`);
             }
@@ -1275,7 +1342,7 @@
                 ? resolvedMeta.input_sizes[0]
                 : null;
             const inputSize = inputFromFrame || inputFromMeta;
-            if (inputSize && inputSize.width && inputSize.height) {
+            if (inputSize?.width && inputSize?.height) {
                 const text = formatAspectText(inputSize.width, inputSize.height);
                 if (text) lines.push(`Input: ${text}`);
             }
@@ -1290,12 +1357,12 @@
                 ? resolvedMeta.processed_sizes[0]
                 : null;
             const procSize = procFromFrame || procFromMeta;
-            if (procSize && procSize.width && procSize.height) {
+            if (procSize?.width && procSize?.height) {
                 const text = formatAspectText(procSize.width, procSize.height);
                 if (text) lines.push(`Processed: ${text}`);
             }
 
-            if (frame && frame.aspect_scale && frame.aspect_scale.length === 2) {
+            if (frame?.aspect_scale?.length === 2) {
                 const [sx, sy] = frame.aspect_scale;
                 if (!Number.isNaN(sx) && !Number.isNaN(sy)) {
                     lines.push(`Scale: x${sx.toFixed(3)} / y${sy.toFixed(3)}`);
@@ -1306,10 +1373,73 @@
                 lines.push(`Frames: ${resolvedMeta.num_frames}`);
             }
 
-            if (!lines.length) {
-                lines.push('Aspect log: awaiting data');
+            if (mediaState.overrideWidth || mediaState.overrideHeight) {
+                lines.push(
+                    `Overrides: ${mediaState.overrideWidth || '-'} × ${mediaState.overrideHeight || '-'}`
+                );
             }
-            el.innerHTML = lines.join('<br>');
+
+            if (mediaState.naturalSize) {
+                const text = formatAspectText(mediaState.naturalSize.width, mediaState.naturalSize.height);
+                if (text) lines.push(`Natural: ${text}`);
+            }
+
+            if (mediaState.renderSize) {
+                const text = formatAspectText(mediaState.renderSize.width, mediaState.renderSize.height);
+                if (text) lines.push(`Rendered: ${text}`);
+            }
+
+            if (mediaState.containerSize) {
+                const text = formatAspectText(mediaState.containerSize.width, mediaState.containerSize.height);
+                if (text) lines.push(`Container: ${text}`);
+            }
+
+            infoEl.innerHTML = lines.join('<br>');
+
+            if (skipPreview) return;
+
+            // Render preview
+            previewEl.innerHTML = '';
+            if (mediaState.url) {
+                if (mediaState.type === 'video') {
+                    const vid = document.createElement('video');
+                    vid.src = mediaState.url;
+                    vid.controls = true;
+                    vid.muted = true;
+                    vid.playsInline = true;
+                    vid.style.maxWidth = '100%';
+                    vid.style.maxHeight = '300px';
+                    if (resolvedMeta.video_rotation && [90, 270].includes(resolvedMeta.video_rotation)) {
+                        vid.classList.add('media-rotate-90');
+                    }
+                    vid.addEventListener('loadedmetadata', () => {
+                        mediaState.naturalSize = { width: vid.videoWidth, height: vid.videoHeight };
+                        setTimeout(() => {
+                            mediaState.renderSize = { width: vid.clientWidth, height: vid.clientHeight };
+                            mediaState.containerSize = { width: previewEl.clientWidth, height: previewEl.clientHeight };
+                            renderMediaPanel(resolvedMeta, frame, true);
+                        }, 50);
+                        renderMediaPanel(resolvedMeta, frame, true);
+                    });
+                    previewEl.appendChild(vid);
+                } else {
+                    const img = document.createElement('img');
+                    img.src = mediaState.url;
+                    img.alt = 'Uploaded media preview';
+                    img.addEventListener('load', () => {
+                        mediaState.naturalSize = { width: img.naturalWidth, height: img.naturalHeight };
+                        setTimeout(() => {
+                            mediaState.renderSize = { width: img.clientWidth, height: img.clientHeight };
+                            mediaState.containerSize = { width: previewEl.clientWidth, height: previewEl.clientHeight };
+                            renderMediaPanel(resolvedMeta, frame, true);
+                        }, 50);
+                        renderMediaPanel(resolvedMeta, frame, true);
+                    });
+                    previewEl.appendChild(img);
+                }
+            } else {
+                previewEl.textContent = 'Preview unavailable';
+            }
         }
 
         function ensureSidePanelStack() {
@@ -2451,6 +2581,20 @@
         }
 
         // File processing (images/videos go to backend; GLB/GLTF/JSON load locally)
+        function setMediaFromFile(file) {
+            if (!file) return;
+            try {
+                if (mediaState.url) URL.revokeObjectURL(mediaState.url);
+            } catch (_) { }
+            mediaState.url = URL.createObjectURL(file);
+            mediaState.type = (file.type && file.type.startsWith('video')) ? 'video' : 'image';
+            mediaState.name = file.name || 'Uploaded media';
+            mediaState.naturalSize = null;
+            mediaState.renderSize = null;
+            mediaState.containerSize = null;
+            renderMediaPanel();
+        }
+
         async function handleFileSelect(file) {
             if (!file) return;
             const lowerName = file.name.toLowerCase();
@@ -2460,6 +2604,8 @@
                 loadLocalGLB(file);
                 return;
             }
+
+            setMediaFromFile(file);
 
             // Otherwise: send to backend for inference (ensure model is loaded first)
             const modelReady = await ensureModelReady();
@@ -3040,7 +3186,7 @@
                 document.getElementById('manual-floor-btn').disabled = false;
                 document.getElementById('camera-mode-btn').disabled = false;
                 document.getElementById('reset-btn').disabled = false;
-                updateAspectLog(processed.metadata || {});
+                renderMediaPanel(processed.metadata || {});
 
                 // Check if this is a video and load video player
                 if (processed.metadata?.is_video) {
@@ -3899,13 +4045,13 @@
 
                 // Update UI
                 document.getElementById('video-controls').style.display = 'flex';
-                document.getElementById('frame-slider').max = this.videoInfo.num_frames - 1;
-                document.getElementById('fps-display').textContent = `${this.videoInfo.fps} FPS`;
-                this.updateFrameCounter();
-                updateAspectLog(this.videoInfo.metadata || activePointCloudData?.metadata || {});
+                    document.getElementById('frame-slider').max = this.videoInfo.num_frames - 1;
+                    document.getElementById('fps-display').textContent = `${this.videoInfo.fps} FPS`;
+                    this.updateFrameCounter();
+                    renderMediaPanel(this.videoInfo.metadata || activePointCloudData?.metadata || {});
 
-                // Load first frame
-                await this.loadFrame(0);
+                    // Load first frame
+                    await this.loadFrame(0);
                 return true;
             } catch (err) {
                     console.error('Failed to load video:', err);
@@ -4025,7 +4171,7 @@
                 this.updateFrameCounter();
                 this.updateCameraHelper(frame);
                 this.syncCloudVisibility();
-                updateAspectLog(activePointCloudData?.metadata || {}, frame);
+                renderMediaPanel(activePointCloudData?.metadata || {}, frame);
 
                 // Update slider
                 const slider = document.getElementById('frame-slider');
@@ -5775,15 +5921,24 @@
         // ============================================================================
 
         // Initialize on load
-        window.addEventListener('DOMContentLoaded', async () => {
-            console.log('Initializing Depth Anything 3 UI...');
+    window.addEventListener('DOMContentLoaded', async () => {
+        console.log('Initializing Depth Anything 3 UI...');
 
-            setupCollapsiblePanels();
-            updateApiDisplay();
-            const apiPill = document.getElementById('api-base-display');
-            if (apiPill) {
-                apiPill.addEventListener('click', () => {
-                    const next = prompt('Enter API base (e.g., http://127.0.0.1:5000)', API_BASE);
+        setupCollapsiblePanels();
+        const wInput = document.getElementById('media-override-width');
+        const hInput = document.getElementById('media-override-height');
+        const handleOverrideChange = () => {
+            mediaState.overrideWidth = wInput?.value ? parseInt(wInput.value, 10) || null : null;
+            mediaState.overrideHeight = hInput?.value ? parseInt(hInput.value, 10) || null : null;
+            renderMediaPanel(activePointCloudData?.metadata || {});
+        };
+        if (wInput) wInput.addEventListener('input', handleOverrideChange);
+        if (hInput) hInput.addEventListener('input', handleOverrideChange);
+        updateApiDisplay();
+        const apiPill = document.getElementById('api-base-display');
+        if (apiPill) {
+            apiPill.addEventListener('click', () => {
+                const next = prompt('Enter API base (e.g., http://127.0.0.1:5000)', API_BASE);
                     if (next) setApiBase(next);
                 });
             }
