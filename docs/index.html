@@ -1335,6 +1335,7 @@
         let orbitControls = null;
         let sectorGrid = null;
         let floorPlane = null;
+        let currentHelperDistance = null;
         let currentJobId = null;
         let currentModel = null;
         let manualFloorMode = false;
@@ -1601,6 +1602,7 @@
             document.getElementById('points-count').textContent = 'Points: 0';
             document.getElementById('model-status-text').textContent = 'Model: Ready';
             renderMediaPanel({});
+            rebuildHelpers(SECTOR_GRID_CONFIG.gridDistance, new THREE.Vector3());
         }
 
         function restoreSessionState(session) {
@@ -1738,8 +1740,9 @@
             });
         }
 
-        function createSectorGrid() {
-            const { gridDistance, lineLength, color, opacity } = SECTOR_GRID_CONFIG;
+        function createSectorGrid(distance = SECTOR_GRID_CONFIG.gridDistance, center = new THREE.Vector3()) {
+            const { lineLength, color, opacity } = SECTOR_GRID_CONFIG;
+            const gridDistance = distance;
             const span = gridDistance * 2 + 1;
             const totalPoints = span * span * span;
             const segmentsPerPoint = 3; // X, Y, Z axes
@@ -1803,11 +1806,13 @@
                 `
             });
 
-            return new THREE.LineSegments(geometry, material);
+            const grid = new THREE.LineSegments(geometry, material);
+            grid.position.copy(center);
+            return grid;
         }
 
-        function createFloorPlane(colorHex = 0x444444) {
-            const geometry = new THREE.PlaneGeometry(400, 400, 1, 1);
+        function createFloorPlane(colorHex = 0x444444, size = 400, center = new THREE.Vector3()) {
+            const geometry = new THREE.PlaneGeometry(size, size, 1, 1);
             const material = new THREE.MeshBasicMaterial({
                 color: colorHex,
                 transparent: true,
@@ -1817,9 +1822,34 @@
             });
             const plane = new THREE.Mesh(geometry, material);
             plane.rotation.x = -Math.PI / 2;
-            plane.position.y = 0;
+            plane.position.set(center.x, 0, center.z);
             plane.renderOrder = -5;
             return plane;
+        }
+
+        function rebuildHelpers(distance, center) {
+            const gridDistance = Math.max(3, Math.min(100, Math.ceil(distance)));
+            const planeSize = Math.max(200, gridDistance * 20);
+            currentHelperDistance = gridDistance;
+
+            if (sectorGrid) {
+                scene.remove(sectorGrid);
+                if (sectorGrid.geometry) sectorGrid.geometry.dispose();
+                if (sectorGrid.material && sectorGrid.material.dispose) sectorGrid.material.dispose();
+                sectorGrid = null;
+            }
+            if (floorPlane) {
+                scene.remove(floorPlane);
+                if (floorPlane.geometry) floorPlane.geometry.dispose();
+                if (floorPlane.material && floorPlane.material.dispose) floorPlane.material.dispose();
+                floorPlane = null;
+            }
+
+            sectorGrid = createSectorGrid(gridDistance, center);
+            scene.add(sectorGrid);
+
+            floorPlane = createFloorPlane(SECTOR_GRID_CONFIG.color, planeSize, center);
+            scene.add(floorPlane);
         }
 
         function ensureSidePanelStack() {
@@ -2015,6 +2045,11 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             container.appendChild(renderer.domElement);
+            renderer.domElement.addEventListener('mousedown', () => {
+                if (document.activeElement && typeof document.activeElement.blur === 'function') {
+                    document.activeElement.blur();
+                }
+            });
 
             // FlyControls (default free-fly camera)
             flyControls = new THREE.FlyControls(camera, renderer.domElement);
@@ -2043,13 +2078,7 @@
             directionalLight.position.set(10, 10, 10);
             scene.add(directionalLight);
 
-            // Dense sector grid (replaces basic grid/axes)
-            sectorGrid = createSectorGrid();
-            scene.add(sectorGrid);
-
-            // Floor plane at y=0 with light opacity
-            floorPlane = createFloorPlane(0x444444);
-            scene.add(floorPlane);
+            rebuildHelpers(SECTOR_GRID_CONFIG.gridDistance, new THREE.Vector3());
 
             // Set initial camera mode (fly)
             setCameraMode(activeCameraMode);
@@ -2131,9 +2160,9 @@
         function setupKeyboardControls() {
             // Keyboard movement state tracking
             document.addEventListener('keydown', (e) => {
-                // Global shortcuts (skip when typing in inputs/textareas)
+                // Global shortcuts (skip when typing in inputs/textareas/selects/contenteditable)
                 const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
-                const isTyping = tag === 'input' || tag === 'textarea';
+                const isTyping = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable;
 
                 if (e.ctrlKey && !isTyping) {
                     if (e.key === 'o' || e.key === 'O') {
@@ -3695,6 +3724,14 @@
                 }
 
                 saveActiveSessionState();
+
+                // Expand helpers to bound the current cloud
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                box.getCenter(center);
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const newDistance = Math.max(SECTOR_GRID_CONFIG.gridDistance, Math.ceil(maxDim / 2 + 2));
+                rebuildHelpers(newDistance, center);
 
                 console.log('Point cloud loaded successfully');
             } catch (error) {
