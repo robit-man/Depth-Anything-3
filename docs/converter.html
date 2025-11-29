@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WEBM → MP4 Converter (FFmpeg.wasm 0.11.6)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- IMPORTANT: enables SharedArrayBuffer via cross-origin isolation
+       without you having to configure headers by hand.
+       Make sure coi-serviceworker.js sits next to this index.html. -->
+  <script src="coi-serviceworker.js"></script>
+
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #020617;
+      color: #f9fafb;
+    }
+
+    .container {
+      width: min(720px, 100% - 2rem);
+      padding: 1.5rem 1.75rem 2rem;
+      border-radius: 1.5rem;
+      background: radial-gradient(circle at top left, #1e293b, #020617);
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.9);
+    }
+
+    h1 {
+      font-size: 1.3rem;
+      margin: 0 0 0.25rem;
+    }
+
+    .sub {
+      margin: 0 0 1.25rem;
+      font-size: 0.9rem;
+      color: #cbd5f5;
+    }
+
+    #drop-zone {
+      border: 1.5px dashed rgba(148, 163, 184, 0.9);
+      border-radius: 1rem;
+      padding: 1.75rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        transform 0.15s ease,
+        box-shadow 0.15s ease;
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    #drop-zone:hover {
+      border-color: #60a5fa;
+      background: rgba(15, 23, 42, 1);
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35);
+    }
+
+    #drop-zone.dragover {
+      border-color: #38bdf8;
+      background: rgba(15, 23, 42, 1);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.5);
+    }
+
+    #drop-zone strong {
+      display: block;
+      margin-bottom: 0.35rem;
+    }
+
+    #drop-zone span {
+      display: block;
+    }
+
+    #file-input {
+      display: none;
+    }
+
+    #status {
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      min-height: 1.1em;
+      color: #e5e7eb;
+    }
+
+    #progress-bar-wrapper {
+      margin-top: 0.5rem;
+      height: 6px;
+      background: rgba(30, 64, 175, 0.5);
+      border-radius: 999px;
+      overflow: hidden;
+      display: none;
+    }
+
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #38bdf8;
+      transition: width 0.1s linear;
+    }
+
+    #download-section {
+      margin-top: 1.25rem;
+      display: none;
+    }
+
+    #download-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 0.9rem;
+      font-size: 0.85rem;
+      border-radius: 999px;
+      text-decoration: none;
+      background: #22c55e;
+      color: #052e16;
+      font-weight: 600;
+      border: none;
+    }
+
+    #download-link:hover {
+      filter: brightness(1.05);
+    }
+
+    #preview {
+      margin-top: 1rem;
+      width: 100%;
+      max-height: 300px;
+      border-radius: 0.9rem;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      background: black;
+    }
+
+    small.note {
+      display: block;
+      margin-top: 0.75rem;
+      font-size: 0.7rem;
+      color: #9ca3af;
+      line-height: 1.4;
+    }
+  </style>
+
+  <!-- ffmpeg.wasm UMD build v0.11.6 -->
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>WEBM → MP4 (Client-Side)</h1>
+    <p class="sub">
+      Drop a <code>.webm</code> file or click below. Conversion happens entirely in your browser; nothing is uploaded.
+    </p>
+
+    <div id="drop-zone">
+      <strong>Drop WEBM here</strong>
+      <span>or click to choose a file</span>
+      <span style="font-size:0.8rem;opacity:.7;margin-top:0.35rem;">(first run downloads the FFmpeg core)</span>
+      <input id="file-input" type="file" accept="video/webm" />
+    </div>
+
+    <div id="status"></div>
+    <div id="progress-bar-wrapper">
+      <div id="progress-bar"></div>
+    </div>
+
+    <div id="download-section">
+      <a id="download-link">⬇️ Download MP4</a>
+      <video id="preview" controls></video>
+    </div>
+
+    <small class="note">
+      This requires a modern Chromium-based browser and must be opened via
+      <code>http://localhost/…</code> or <code>https://</code> for
+      <code>SharedArrayBuffer</code> to work.
+    </small>
+  </div>
+
+  <script>
+    // DOM elements
+    const dropZone = document.getElementById("drop-zone");
+    const fileInput = document.getElementById("file-input");
+    const statusEl = document.getElementById("status");
+    const progressWrapper = document.getElementById("progress-bar-wrapper");
+    const progressBar = document.getElementById("progress-bar");
+    const downloadSection = document.getElementById("download-section");
+    const downloadLink = document.getElementById("download-link");
+    const preview = document.getElementById("preview");
+
+    // ffmpeg.wasm setup (0.11.6)
+    const { createFFmpeg, fetchFile } = FFmpeg;
+    const ffmpeg = createFFmpeg({ log: true });
+
+    let busy = false;
+
+    function setStatus(text) {
+      statusEl.textContent = text || "";
+    }
+
+    function setProgress(ratio) {
+      if (typeof ratio !== "number") return;
+      progressWrapper.style.display = "block";
+      const clamped = Math.max(0, Math.min(1, ratio));
+      progressBar.style.width = (clamped * 100).toFixed(1) + "%";
+    }
+
+    async function ensureFFmpegLoaded() {
+      if (!ffmpeg.isLoaded()) {
+        setStatus("Loading FFmpeg core into the browser…");
+        progressWrapper.style.display = "none";
+        await ffmpeg.load();
+      }
+    }
+
+    async function handleFile(file) {
+      if (!file || busy) return;
+
+      if (!/\.webm$/i.test(file.name)) {
+        alert("Please choose a .webm file.");
+        return;
+      }
+
+      busy = true;
+      downloadSection.style.display = "none";
+      preview.removeAttribute("src");
+      preview.load();
+      setProgress(0);
+
+      try {
+        await ensureFFmpegLoaded();
+
+        // Clean up from previous runs (ignore errors if files don't exist)
+        try { ffmpeg.FS("unlink", "input.webm"); } catch { /* ignore */ }
+        try { ffmpeg.FS("unlink", "output.mp4"); } catch { /* ignore */ }
+
+        setStatus("Transcoding WEBM → MP4… this can take a bit.");
+        if (typeof ffmpeg.setProgress === "function") {
+          ffmpeg.setProgress(({ ratio }) => setProgress(ratio || 0));
+        }
+
+        // Write the input file into FFmpeg's virtual filesystem
+        ffmpeg.FS("writeFile", "input.webm", await fetchFile(file));
+
+        // Basic video → MP4 transcode (H.264 + AAC)
+        await ffmpeg.run(
+          "-i", "input.webm",
+          "-c:v", "libx264",
+          "-c:a", "aac",
+          "output.mp4"
+        );
+
+        // Read the result back and create a Blob URL
+        const data = ffmpeg.FS("readFile", "output.mp4");
+        const blob = new Blob([data.buffer], { type: "video/mp4" });
+        const url = URL.createObjectURL(blob);
+
+        const baseName = file.name.replace(/\.webm$/i, "");
+        downloadLink.href = url;
+        downloadLink.download = baseName + ".mp4";
+        preview.src = url;
+
+        downloadSection.style.display = "block";
+        setStatus("Done! Download your MP4 below.");
+        setProgress(1);
+      } catch (err) {
+        console.error(err);
+        setStatus("Something went wrong while converting. Check the console for details.");
+        progressWrapper.style.display = "none";
+      } finally {
+        busy = false;
+      }
+    }
+
+    // Click-to-upload
+    dropZone.addEventListener("click", () => {
+      if (!busy) fileInput.click();
+    });
+
+    fileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) {
+        handleFile(file);
+        // allow re-selecting the same file again
+        fileInput.value = "";
+      }
+    });
+
+    // Drag-and-drop
+    dropZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (busy) return;
+      dropZone.classList.add("dragover");
+      e.dataTransfer.dropEffect = "copy";
+    });
+
+    dropZone.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("dragover");
+    });
+
+    dropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("dragover");
+      if (busy) return;
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) {
+        handleFile(file);
+      }
+    });
+  </script>
+</body>
+</html>
