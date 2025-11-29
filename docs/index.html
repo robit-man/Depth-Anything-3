@@ -1631,6 +1631,7 @@
         const CAMERA_HEIGHT = 1.6;
         const WALK_SPEED = 3.5;
         const VERTICAL_SPEED = 2.0;
+        const DEFAULT_FOV = 75;
         const clock = new THREE.Clock();
         const tempEuler = new THREE.Euler(0, 0, 0, 'YXZ');  // used to zero roll in fly mode
         let moveForward = false;
@@ -1665,7 +1666,7 @@
 
             // Camera
             camera = new THREE.PerspectiveCamera(
-                75,
+                DEFAULT_FOV,
                 window.innerWidth / window.innerHeight,
                 0.1,
                 1000
@@ -1871,7 +1872,23 @@
                 }
             });
 
-            console.log('Keyboard controls enabled: WASD/Arrows=Move, Q/E=Up/Down, Space=Reset height');
+            // FOV adjustment on scroll in FPS mode
+            document.addEventListener('wheel', (e) => {
+                if (isFPSMode() && pointerLocked) {
+                    e.preventDefault();
+
+                    // Adjust FOV based on scroll direction
+                    // Scroll down (deltaY positive) = zoom out = increase FOV
+                    // Scroll up (deltaY negative) = zoom in = decrease FOV
+                    const fovChange = e.deltaY * 0.05;
+                    const newFOV = THREE.MathUtils.clamp(camera.fov + fovChange, 30, 120);
+
+                    camera.fov = newFOV;
+                    camera.updateProjectionMatrix();
+                }
+            }, { passive: false });
+
+            console.log('Keyboard controls enabled: WASD/Arrows=Move, Q/E=Up/Down, Space=Reset height, Scroll=FOV, Middle-Click=Reset FOV (FPS mode)');
         }
 
         function ensurePointerLockControls() {
@@ -2016,6 +2033,14 @@
 
             // Start hold on mousedown (not in floor selection mode)
             renderer.domElement.addEventListener('mousedown', (e) => {
+                // Middle mouse button resets FOV in FPS mode
+                if (e.button === 1 && isFPSMode() && pointerLocked) {
+                    e.preventDefault();
+                    camera.fov = DEFAULT_FOV;
+                    camera.updateProjectionMatrix();
+                    return;
+                }
+
                 if (e.button === 0 && !manualFloorMode && !pointerLocked && isFPSMode()) {
                     holdStartTime = Date.now();
 
@@ -3874,6 +3899,8 @@
         function resetView() {
             camera.position.set(0, CAMERA_HEIGHT, 5);  // Reset to eye level
             camera.lookAt(new THREE.Vector3(0, CAMERA_HEIGHT, 0));
+            camera.fov = DEFAULT_FOV;  // Reset FOV
+            camera.updateProjectionMatrix();
             if (controls) controls.update(0);
         }
 
@@ -4001,6 +4028,12 @@
 
             if (pointerLocked || pointerLockControls) {
                 exitPointerLock();
+            }
+
+            // Reset FOV when exiting FPS mode
+            if (camera.fov !== DEFAULT_FOV) {
+                camera.fov = DEFAULT_FOV;
+                camera.updateProjectionMatrix();
             }
 
             disableNavigationControls();
