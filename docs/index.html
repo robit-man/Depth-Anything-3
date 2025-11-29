@@ -258,8 +258,8 @@
 
         .top-bar button {
             padding: 10px 20px;
-            background: rgba(59, 130, 246, 0.2);
-            border: 1px solid rgba(59, 130, 246, 0.5);
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
             border-radius: 8px;
             color: #fff;
             cursor: pointer;
@@ -271,8 +271,8 @@
         }
 
         .top-bar button:hover {
-            background: rgba(59, 130, 246, 0.4);
-            border-color: rgba(59, 130, 246, 0.8);
+            background: rgba(255, 255, 255, 0.14);
+            border-color: rgba(255, 255, 255, 0.25);
         }
 
         .top-bar button:disabled {
@@ -309,7 +309,7 @@
             position: fixed;
             content: '';
             pointer-events:none;
-            bottom:s 0;
+            bottom: 0;
             left: 0;
             right: 0;
             width:100vw;
@@ -320,8 +320,8 @@
 
         .bottom-bar button {
             padding: 12px 24px;
-            background: rgba(16, 185, 129, 0.2);
-            border: 1px solid rgba(16, 185, 129, 0.5);
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
             border-radius: 8px;
             color: #fff;
             cursor: pointer;
@@ -334,8 +334,8 @@
         }
 
         .bottom-bar button:hover:not(:disabled) {
-            background: rgba(16, 185, 129, 0.4);
-            border-color: rgba(16, 185, 129, 0.8);
+            background: rgba(255, 255, 255, 0.14);
+            border-color: rgba(255, 255, 255, 0.25);
             transform: translateY(-2px);
         }
 
@@ -825,6 +825,34 @@
             line-height: 1.4;
         }
 
+        /* Session panel styles to match media inputs/buttons */
+        #scene-session-panel .session-select {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #fff;
+            padding: 6px 8px;
+            font-size: 12px;
+            height: 34px;
+        }
+
+        #scene-session-panel .session-new-btn {
+            padding: 8px 12px;
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(59, 130, 246, 0.5);
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        #scene-session-panel .session-new-btn:hover {
+            background: rgba(59, 130, 246, 0.35);
+            border-color: rgba(59, 130, 246, 0.7);
+        }
+
         #scene-alignment-panel .reset-button {
             width: 100%;
             padding: 8px;
@@ -924,8 +952,8 @@
 
         /* Scene recording indicator */
         #record-scene-btn.recording {
-            background: rgba(239, 68, 68, 0.3);
-            border-color: rgba(239, 68, 68, 0.8);
+            background: rgba(239, 68, 68, 0.2);
+            border-color: rgba(239, 68, 68, 0.6);
         }
 
         #record-scene-btn.recording i {
@@ -1305,6 +1333,8 @@
         let scene, camera, renderer, controls, pointerLockControls, pointCloud;
         let flyControls = null;
         let orbitControls = null;
+        let sectorGrid = null;
+        let floorPlane = null;
         let currentJobId = null;
         let currentModel = null;
         let manualFloorMode = false;
@@ -1337,7 +1367,7 @@
             showCameras: true,
             featVisFps: 15,
             pointSize: 0.01,
-            pointShape: 'circle',
+            pointShape: 'square',
             generateMesh: false,
             meshSamplePoints: 3000,
             fillSparse: false,
@@ -1346,6 +1376,12 @@
             sparseFillNewPoints: 5000
         };
         let viewerConfig = { ...defaultConfig };
+        const SECTOR_GRID_CONFIG = {
+            gridDistance: 10,
+            lineLength: 0.05,
+            color: 0x444444,
+            opacity: 0.2
+        };
         const mediaState = {
             url: null,
             type: null,
@@ -1358,6 +1394,30 @@
             containerSize: null
         };
 
+        // Scene sessions allow you to keep multiple uploads isolated and switch between them.
+        const sessionStore = {
+            sessions: [],
+            activeId: null,
+            counter: 1
+        };
+
+        const blankMediaState = {
+            url: null,
+            type: null,
+            name: null,
+            rotation: 0,
+            overrideWidth: null,
+            overrideHeight: null,
+            naturalSize: null,
+            renderSize: null,
+            containerSize: null
+        };
+
+        const defaultSceneTransform = () => ({
+            translation: { x: 0, y: 0, z: 0 },
+            rotation: { yaw: 0, pitch: 0, roll: 0 }
+        });
+
         function formatAspectText(width, height) {
             if (!width || !height) return null;
             const ratio = (width / height).toFixed(3);
@@ -1369,6 +1429,16 @@
             const infoEl = document.getElementById('media-info-text');
             const previewEl = document.getElementById('media-preview');
             if (!infoEl || !previewEl) return;
+
+            const hasMedia = mediaState.url || resolvedMeta.filename || resolvedMeta.num_frames || mediaState.name;
+            if (!hasMedia) {
+                infoEl.innerHTML = 'No media loaded';
+                previewEl.textContent = 'Preview unavailable';
+                if (mediaState && mediaState.url) {
+                    try { URL.revokeObjectURL(mediaState.url); } catch (_) { }
+                }
+                return;
+            }
 
             const lines = [];
             const filename = mediaState.name || resolvedMeta.filename || 'Unknown';
@@ -1484,6 +1554,272 @@
             } else {
                 previewEl.textContent = 'Preview unavailable';
             }
+        }
+
+        function resetMediaState() {
+            Object.assign(mediaState, { ...blankMediaState });
+        }
+
+        function getActiveSession() {
+            return sessionStore.sessions.find(s => s.id === sessionStore.activeId) || null;
+        }
+
+        function saveActiveSessionState() {
+            const session = getActiveSession();
+            if (!session) return;
+            session.sourcePointCloudData = sourcePointCloudData;
+            session.activePointCloudData = activePointCloudData;
+            session.media = { ...mediaState };
+            if (typeof videoPlayer !== 'undefined' && videoPlayer && videoPlayer.sceneTransform) {
+                session.sceneTransform = JSON.parse(JSON.stringify(videoPlayer.sceneTransform));
+            }
+            renderSessionDropdown();
+        }
+
+        function clearSceneVisuals() {
+            if (pointCloud) {
+                scene.remove(pointCloud);
+                if (pointCloud.geometry) pointCloud.geometry.dispose();
+                if (pointCloud.material && pointCloud.material.dispose) {
+                    pointCloud.material.dispose();
+                }
+                pointCloud = null;
+            }
+            removeMesh();
+            if (typeof videoPlayer !== 'undefined' && videoPlayer && videoPlayer.reset) {
+                videoPlayer.reset();
+            }
+            originalPointCloudData = null;
+            sourcePointCloudData = null;
+            activePointCloudData = null;
+            hoveredIndices = [];
+            selectedIndices = [];
+            hoveredLowestIndex = null;
+            selectedLowestIndex = null;
+            selectedAnchorPoint = null;
+            resetMediaState();
+            document.getElementById('points-count').textContent = 'Points: 0';
+            document.getElementById('model-status-text').textContent = 'Model: Ready';
+            renderMediaPanel({});
+        }
+
+        function restoreSessionState(session) {
+            clearSceneVisuals();
+            if (session && !session.sceneTransform) {
+                session.sceneTransform = defaultSceneTransform();
+            }
+            resetMediaState();
+            if (session?.media) {
+                Object.assign(mediaState, session.media);
+            }
+            const meta = session?.activePointCloudData?.metadata || session?.sourcePointCloudData?.metadata || {};
+            renderMediaPanel(meta);
+            applySessionSceneTransform(session);
+
+            if (session?.sourcePointCloudData) {
+                // Rebuild the scene for this session using the stored source data
+                loadPointCloud(session.sourcePointCloudData, { preserveSource: true });
+            }
+        }
+
+        function createSession(name = null) {
+            const session = {
+                id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                name: name || `Session ${sessionStore.counter}`,
+                sourcePointCloudData: null,
+                activePointCloudData: null,
+                media: null,
+                sceneTransform: defaultSceneTransform(),
+                jobId: null
+            };
+            sessionStore.counter += 1;
+            sessionStore.sessions.push(session);
+            sessionStore.activeId = session.id;
+            renderSessionDropdown();
+            restoreSessionState(session);
+            return session;
+        }
+
+        function setActiveSession(sessionId) {
+            if (!sessionId || sessionId === sessionStore.activeId) return;
+            saveActiveSessionState();
+            const target = sessionStore.sessions.find(s => s.id === sessionId);
+            if (!target) return;
+            sessionStore.activeId = target.id;
+            renderSessionDropdown();
+            restoreSessionState(target);
+        }
+
+        function renderSessionDropdown() {
+            const selects = Array.from(document.querySelectorAll('.session-select'));
+            if (!selects.length) return;
+
+            selects.forEach(select => {
+                select.innerHTML = '';
+
+                if (sessionStore.sessions.length === 0) {
+                    const placeholder = document.createElement('option');
+                    placeholder.disabled = true;
+                    placeholder.selected = true;
+                    placeholder.textContent = 'No sessions yet';
+                    select.appendChild(placeholder);
+                }
+
+                sessionStore.sessions.forEach(session => {
+                    const hasData = Boolean(
+                        session.sourcePointCloudData ||
+                        session.activePointCloudData ||
+                        (session.media && (session.media.url || session.media.name))
+                    );
+                    const opt = document.createElement('option');
+                    opt.value = session.id;
+                    const suffix = session.jobId ? ' ⏳' : (hasData ? ' •' : '');
+                    opt.textContent = session.name + suffix;
+                    if (session.id === sessionStore.activeId) opt.selected = true;
+                    select.appendChild(opt);
+                });
+
+                const newOpt = document.createElement('option');
+                newOpt.value = '__new__';
+                newOpt.textContent = '+ New Scene';
+                select.appendChild(newOpt);
+            });
+        }
+
+        function ensureDefaultSession() {
+            if (sessionStore.sessions.length === 0) {
+                createSession('Session 1');
+            }
+        }
+
+        function resetSceneAlignmentControls() {
+            ['x', 'y', 'z'].forEach(axis => {
+                const slider = document.getElementById(`scene-trans-${axis}`);
+                if (slider) slider.value = 0;
+                const display = slider?.nextElementSibling;
+                if (display) display.textContent = '0.0';
+            });
+            ['yaw', 'pitch', 'roll'].forEach(id => {
+                const slider = document.getElementById(`scene-rot-${id}`);
+                if (slider) slider.value = 0;
+                const display = slider?.nextElementSibling;
+                if (display) display.textContent = '0°';
+            });
+            if (typeof videoPlayer !== 'undefined' && videoPlayer && videoPlayer.resetSceneTransform) {
+                videoPlayer.resetSceneTransform();
+            }
+        }
+
+        function applySessionSceneTransform(session) {
+            if (!session || !session.sceneTransform || typeof videoPlayer === 'undefined' || !videoPlayer) {
+                resetSceneAlignmentControls();
+                return;
+            }
+            const { translation, rotation } = session.sceneTransform;
+            ['x', 'y', 'z'].forEach(axis => {
+                if (typeof translation?.[axis] !== 'number') return;
+                const slider = document.getElementById(`scene-trans-${axis}`);
+                if (slider) {
+                    slider.value = translation[axis];
+                    const display = slider.nextElementSibling;
+                    if (display) display.textContent = parseFloat(translation[axis]).toFixed(1);
+                }
+                videoPlayer.setSceneTranslation(axis, translation[axis]);
+            });
+            ['yaw', 'pitch', 'roll'].forEach(id => {
+                if (typeof rotation?.[id] !== 'number') return;
+                const slider = document.getElementById(`scene-rot-${id}`);
+                if (slider) {
+                    slider.value = rotation[id];
+                    const display = slider.nextElementSibling;
+                    if (display) display.textContent = `${rotation[id]}°`;
+                }
+                videoPlayer.setSceneRotation(id, rotation[id]);
+            });
+        }
+
+        function createSectorGrid() {
+            const { gridDistance, lineLength, color, opacity } = SECTOR_GRID_CONFIG;
+            const span = gridDistance * 2 + 1;
+            const totalPoints = span * span * span;
+            const segmentsPerPoint = 3; // X, Y, Z axes
+            const vertsPerSegment = 2;
+            const totalVerts = totalPoints * segmentsPerPoint * vertsPerSegment;
+            const positions = new Float32Array(totalVerts * 3);
+            const alphas = new Float32Array(totalVerts);
+
+            let p = 0;
+            let a = 0;
+            const half = lineLength / 2;
+
+            for (let x = -gridDistance; x <= gridDistance; x++) {
+                for (let y = -gridDistance; y <= gridDistance; y++) {
+                    for (let z = -gridDistance; z <= gridDistance; z++) {
+                        // X axis segment
+                        positions[p++] = x - half; positions[p++] = y; positions[p++] = z;
+                        positions[p++] = x + half; positions[p++] = y; positions[p++] = z;
+                        alphas[a++] = 1; alphas[a++] = 1;
+
+                        // Y axis segment
+                        positions[p++] = x; positions[p++] = y - half; positions[p++] = z;
+                        positions[p++] = x; positions[p++] = y + half; positions[p++] = z;
+                        alphas[a++] = 1; alphas[a++] = 1;
+
+                        // Z axis segment
+                        positions[p++] = x; positions[p++] = y; positions[p++] = z - half;
+                        positions[p++] = x; positions[p++] = y; positions[p++] = z + half;
+                        alphas[a++] = 1; alphas[a++] = 1;
+                    }
+                }
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+            geometry.computeBoundingSphere();
+
+            const material = new THREE.ShaderMaterial({
+                transparent: true,
+                depthWrite: false,
+                uniforms: {
+                    uColor: { value: new THREE.Color(color) },
+                    uOpacity: { value: opacity }
+                },
+                vertexShader: `
+                    attribute float alpha;
+                    varying float vAlpha;
+                    void main() {
+                        vAlpha = alpha;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 uColor;
+                    uniform float uOpacity;
+                    varying float vAlpha;
+                    void main() {
+                        gl_FragColor = vec4(uColor, uOpacity * vAlpha);
+                    }
+                `
+            });
+
+            return new THREE.LineSegments(geometry, material);
+        }
+
+        function createFloorPlane(colorHex = 0x444444) {
+            const geometry = new THREE.PlaneGeometry(400, 400, 1, 1);
+            const material = new THREE.MeshBasicMaterial({
+                color: colorHex,
+                transparent: true,
+                opacity: 0.2,
+                side: THREE.DoubleSide,
+                depthWrite: false
+            });
+            const plane = new THREE.Mesh(geometry, material);
+            plane.rotation.x = -Math.PI / 2;
+            plane.position.y = 0;
+            plane.renderOrder = -5;
+            return plane;
         }
 
         function ensureSidePanelStack() {
@@ -1662,7 +1998,7 @@
             // Scene
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x000000);
-            scene.fog = new THREE.Fog(0x000000, 10, 50);
+            scene.fog = new THREE.Fog(0x000000, 10, 100);
 
             // Camera
             camera = new THREE.PerspectiveCamera(
@@ -1671,7 +2007,8 @@
                 0.1,
                 1000
             );
-            camera.position.set(0, 1.6, 5);  // Start at eye level (1.6m)
+            camera.position.set(0, 1.6, 0);  // Start at scene center, eye level
+            camera.lookAt(new THREE.Vector3(0, 1.6, -1));
 
             // Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1696,6 +2033,7 @@
             orbitControls.minDistance = 0.5;
             orbitControls.maxDistance = 200;
             orbitControls.enabled = false;
+            orbitControls.target.set(0, 0, 0);
 
             // Lights
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -1705,13 +2043,13 @@
             directionalLight.position.set(10, 10, 10);
             scene.add(directionalLight);
 
-            // Grid
-            const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
-            scene.add(gridHelper);
+            // Dense sector grid (replaces basic grid/axes)
+            sectorGrid = createSectorGrid();
+            scene.add(sectorGrid);
 
-            // Axes
-            const axesHelper = new THREE.AxesHelper(5);
-            scene.add(axesHelper);
+            // Floor plane at y=0 with light opacity
+            floorPlane = createFloorPlane(0x444444);
+            scene.add(floorPlane);
 
             // Set initial camera mode (fly)
             setCameraMode(activeCameraMode);
@@ -1793,6 +2131,33 @@
         function setupKeyboardControls() {
             // Keyboard movement state tracking
             document.addEventListener('keydown', (e) => {
+                // Global shortcuts (skip when typing in inputs/textareas)
+                const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+                const isTyping = tag === 'input' || tag === 'textarea';
+
+                if (e.ctrlKey && !isTyping) {
+                    if (e.key === 'o' || e.key === 'O') {
+                        e.preventDefault();
+                        const fileInput = document.getElementById('file-input');
+                        if (fileInput) fileInput.click();
+                        return;
+                    }
+                    if (e.key === 's' || e.key === 'S') {
+                        e.preventDefault();
+                        if (typeof exportGLB === 'function') {
+                            exportGLB();
+                        }
+                        return;
+                    }
+                    if (e.key === 'k' || e.key === 'K') {
+                        e.preventDefault();
+                        if (typeof cycleCameraMode === 'function') {
+                            cycleCameraMode();
+                        }
+                        return;
+                    }
+                }
+
                 switch (e.key) {
                     case 'w':
                     case 'W':
@@ -2662,10 +3027,15 @@
             mediaState.renderSize = null;
             mediaState.containerSize = null;
             renderMediaPanel();
+            saveActiveSessionState();
         }
 
         async function handleFileSelect(file) {
             if (!file) return;
+            ensureDefaultSession();
+            if (!getActiveSession()) {
+                createSession(`Session ${sessionStore.counter}`);
+            }
             const lowerName = file.name.toLowerCase();
             const isLocalPointCloud = lowerName.endsWith('.glb') || lowerName.endsWith('.gltf') || lowerName.endsWith('.json');
 
@@ -2720,8 +3090,13 @@
                     return;
                 } else if (response.ok && data.job_id) {
                     currentJobId = data.job_id;
+                    const activeSession = getActiveSession();
+                    if (activeSession) {
+                        activeSession.jobId = data.job_id;
+                        renderSessionDropdown();
+                    }
                     document.getElementById('model-status-text').textContent = 'Processing...';
-                    pollJobStatus();
+                    pollJobStatus(data.job_id, activeSession ? activeSession.id : null);
                 } else {
                     alert('Error: ' + (data.error || 'Unknown error'));
                     document.getElementById('model-status-text').textContent = 'Model: Ready';
@@ -2802,6 +3177,7 @@
                 document.getElementById('manual-floor-btn').disabled = false;
                 document.getElementById('camera-mode-btn').disabled = false;
                 document.getElementById('reset-btn').disabled = false;
+                saveActiveSessionState();
 
                 URL.revokeObjectURL(url);
             }, undefined, (err) => {
@@ -2812,14 +3188,31 @@
             });
         }
 
-        async function pollJobStatus() {
+        function pollJobStatus(jobId, sessionId = null) {
+            if (!jobId) return;
             const interval = setInterval(async () => {
                 try {
-                    const response = await fetch(`/api/job/${currentJobId}`);
+                    const response = await fetch(`/api/job/${jobId}`);
                     const data = await response.json();
 
                     if (data.status === 'completed') {
                         clearInterval(interval);
+                        if (currentJobId === jobId) currentJobId = null;
+                        const targetSession = sessionStore.sessions.find(s => s.id === sessionId) || getActiveSession();
+                        if (targetSession) {
+                            targetSession.jobId = null;
+                        }
+
+                        if (sessionId && sessionId !== sessionStore.activeId) {
+                            if (targetSession) {
+                                targetSession.sourcePointCloudData = data.pointcloud;
+                                targetSession.activePointCloudData = data.pointcloud;
+                            }
+                            renderSessionDropdown();
+                            console.log(`Processing finished for ${targetSession?.name || 'background session'}`);
+                            return;
+                        }
+
                         loadPointCloud(data.pointcloud);
                         document.getElementById('model-status-text').textContent = 'Model: Ready';
                         document.getElementById('export-btn').disabled = false;
@@ -2828,10 +3221,21 @@
                         document.getElementById('manual-floor-btn').disabled = false;
                         document.getElementById('camera-mode-btn').disabled = false;
                         document.getElementById('reset-btn').disabled = false;
+                        renderSessionDropdown();
                     } else if (data.status === 'error') {
                         clearInterval(interval);
-                        alert('Processing failed: ' + (data.error || 'Unknown error'));
-                        document.getElementById('model-status-text').textContent = 'Model: Ready';
+                        if (currentJobId === jobId) currentJobId = null;
+                        const targetSession = sessionStore.sessions.find(s => s.id === sessionId) || getActiveSession();
+                        if (targetSession) {
+                            targetSession.jobId = null;
+                        }
+                        if (!sessionId || sessionId === sessionStore.activeId) {
+                            alert('Processing failed: ' + (data.error || 'Unknown error'));
+                            document.getElementById('model-status-text').textContent = 'Model: Ready';
+                        } else {
+                            console.error(`Processing failed for ${targetSession?.name || 'background session'}: ${data.error || 'Unknown error'}`);
+                        }
+                        renderSessionDropdown();
                     }
                 } catch (error) {
                     console.error('Status polling error:', error);
@@ -3184,6 +3588,10 @@
 
         function loadPointCloud(data, options = {}) {
             const { preserveSource = false } = options;
+            const activeSessionRef = getActiveSession();
+            if (activeSessionRef && activeSessionRef.jobId) {
+                activeSessionRef.jobId = null;
+            }
             try {
                 const shouldUpdateSource = !preserveSource || !sourcePointCloudData;
                 if (shouldUpdateSource) {
@@ -3285,6 +3693,8 @@
                 if (viewerConfig.generateMesh) {
                     buildMeshFromActiveCloud();
                 }
+
+                saveActiveSessionState();
 
                 console.log('Point cloud loaded successfully');
             } catch (error) {
@@ -6016,6 +6426,7 @@
                 slider.addEventListener('input', (e) => {
                     valueDisplay.textContent = parseFloat(e.target.value).toFixed(1);
                     videoPlayer.setSceneTranslation(axis, parseFloat(e.target.value));
+                    saveActiveSessionState();
                 });
                 row.appendChild(slider);
 
@@ -6058,6 +6469,7 @@
                 slider.addEventListener('input', (e) => {
                     valueDisplay.textContent = e.target.value + '°';
                     videoPlayer.setSceneRotation(id, parseFloat(e.target.value));
+                    saveActiveSessionState();
                 });
                 row.appendChild(slider);
 
@@ -6071,19 +6483,8 @@
             resetBtn.textContent = '↺ Reset All';
             resetBtn.className = 'reset-button';
             resetBtn.addEventListener('click', () => {
-                ['x', 'y', 'z'].forEach(axis => {
-                    const slider = document.getElementById(`scene-trans-${axis}`);
-                    if (slider) slider.value = 0;
-                    const display = slider?.nextElementSibling;
-                    if (display) display.textContent = '0.0';
-                });
-                ['yaw', 'pitch', 'roll'].forEach(id => {
-                    const slider = document.getElementById(`scene-rot-${id}`);
-                    if (slider) slider.value = 0;
-                    const display = slider?.nextElementSibling;
-                    if (display) display.textContent = '0°';
-                });
-                videoPlayer.resetSceneTransform();
+                resetSceneAlignmentControls();
+                saveActiveSessionState();
             });
             body.appendChild(resetBtn);
 
@@ -6093,6 +6494,66 @@
             body.appendChild(note);
 
             stack.appendChild(panel);
+            renderSessionDropdown();
+        }
+
+        function ensureSceneAlignmentPanel() {
+            if (!document.getElementById('scene-alignment-panel')) {
+                createSceneAlignmentPanel();
+            }
+        }
+
+        function createSessionPanel() {
+            const existing = document.getElementById('scene-session-panel');
+            if (existing) existing.remove();
+
+            const { panel, body } = createCollapsiblePanelShell('scene-session-panel', 'Scene Sessions', 'fa-layer-group');
+            const stack = ensureSidePanelStack();
+
+            const row = document.createElement('div');
+            row.className = 'scene-align-row';
+
+            const label = document.createElement('div');
+            label.textContent = 'Active';
+            label.className = 'scene-align-label';
+            row.appendChild(label);
+
+            const select = document.createElement('select');
+            select.className = 'scene-align-slider session-select';
+            select.addEventListener('change', (e) => {
+                if (e.target.value === '__new__') {
+                    createSession(`Session ${sessionStore.counter}`);
+                } else {
+                    setActiveSession(e.target.value);
+                }
+            });
+            row.appendChild(select);
+
+            const newBtn = document.createElement('button');
+            newBtn.textContent = '+ New Session';
+            newBtn.style.padding = '6px 10px';
+            newBtn.style.fontSize = '12px';
+            newBtn.className = 'session-new-btn';
+            newBtn.addEventListener('click', () => {
+                createSession(`Session ${sessionStore.counter}`);
+            });
+            row.appendChild(newBtn);
+
+            body.appendChild(row);
+
+            const note = document.createElement('div');
+            note.className = 'scene-align-note';
+            note.textContent = 'Manage separate uploads as isolated scenes.';
+            body.appendChild(note);
+
+            stack.appendChild(panel);
+            renderSessionDropdown();
+        }
+
+        function ensureSessionPanel() {
+            if (!document.getElementById('scene-session-panel')) {
+                createSessionPanel();
+            }
         }
 
         // ============================================================================
@@ -6130,9 +6591,13 @@
             initThreeJS();
             console.log('Three.js scene initialized');
 
-            // Build alignment helper UIs
+            // Build helper panels
             createSignFlipPanel();
+            createSessionPanel();
             createSceneAlignmentPanel();
+            ensureDefaultSession();
+            ensureSceneAlignmentPanel();
+            ensureSessionPanel();
 
             // Setup event handlers
             setupDragAndDrop();
@@ -6147,6 +6612,10 @@
             updateModelStatus();
             hydrateModelStatus();
             console.log('UI initialization complete');
+
+            // Safety: ensure the sessions/alignment panel exists even if earlier init bailed
+            setTimeout(ensureSceneAlignmentPanel, 0);
+            setTimeout(ensureSessionPanel, 0);
         });
     </script>
 </body>
