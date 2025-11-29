@@ -1758,16 +1758,16 @@ def process_file():
                     if confidence_maps is not None and i < len(confidence_maps):
                         conf_map = confidence_maps[i]
 
-                    # Adjust intrinsics back to the native frame size to preserve aspect ratio
+                    # Use intrinsics as provided by the model (already matched to processed resolution)
                     ixt = np.array(prediction.intrinsics[i], dtype=np.float32)
                     proc_h, proc_w = depth.shape
                     orig_w, orig_h = input_sizes[i] if input_sizes and i < len(input_sizes) else (proc_w, proc_h)
+
+                    # Calculate scale factors for metadata only (not for 3D reconstruction)
                     scale_x = float(orig_w) / float(proc_w)
                     scale_y = float(orig_h) / float(proc_h)
-                    ixt[0, 0] *= scale_x  # fx
-                    ixt[0, 2] *= scale_x  # cx
-                    ixt[1, 1] *= scale_y  # fy
-                    ixt[1, 2] *= scale_y  # cy
+
+                    # Extract intrinsics at processed resolution for accurate metric depth
                     fx, fy = ixt[0, 0], ixt[1, 1]
                     cx, cy = ixt[0, 2], ixt[1, 2]
 

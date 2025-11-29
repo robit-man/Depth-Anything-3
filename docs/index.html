@@ -236,14 +236,24 @@
             left: 0;
             right: 0;
             height: 60px;
-            background: rgba(0, 0, 0, 0.8);
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
             align-items: center;
             padding: 0 20px;
             gap: 15px;
             z-index: 100;
+        }
+
+        .top-bar::before {
+            position: fixed;
+            content: '';
+            pointer-events:none;
+            top: 0;
+            left: 0;
+            right: 0;
+            width:100vw;
+            height: 300px;
+            mask: linear-gradient(black, #000e, #000a, #0005, transparent, transparent, transparent);
+            backdrop-filter: blur(20px);z-index: -1;
         }
 
         .top-bar button {
@@ -287,15 +297,25 @@
             left: 0;
             right: 0;
             height: 70px;
-            background: rgba(0, 0, 0, 0.8);
-            backdrop-filter: blur(10px);
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 0 20px;
             gap: 15px;
             z-index: 100;
+        }
+
+        .bottom-bar::before {
+            position: fixed;
+            content: '';
+            pointer-events:none;
+            bottom:s 0;
+            left: 0;
+            right: 0;
+            width:100vw;
+            height: 300px;
+            mask: linear-gradient(transparent, transparent, transparent,#0005, #000a, #000e, black);
+            backdrop-filter: blur(20px);z-index: -1;
         }
 
         .bottom-bar button {
@@ -892,6 +912,7 @@
         .media-panel-preview img {
             max-width: 100%;
             max-height: 300px;
+            object-fit: contain;
             border-radius: 6px;
             border: 1px solid rgba(255, 255, 255, 0.08);
             background: #000;
@@ -899,6 +920,26 @@
 
         .media-rotate-90 {
             transform: rotate(90deg);
+        }
+
+        /* Scene recording indicator */
+        #record-scene-btn.recording {
+            background: rgba(239, 68, 68, 0.3);
+            border-color: rgba(239, 68, 68, 0.8);
+        }
+
+        #record-scene-btn.recording i {
+            color: #ef4444;
+            animation: pulse-recording 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse-recording {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.3;
+            }
         }
     </style>
 </head>
@@ -981,6 +1022,9 @@
 
         <button onclick="exportGLB()" id="export-btn" disabled>
             <i class="fas fa-file-export"></i> <span class="btn-label">Export GLB</span>
+        </button>
+        <button onclick="toggleSceneRecording()" id="record-scene-btn" disabled>
+            <i class="fas fa-circle"></i> <span id="record-scene-text" class="btn-label">Record Scene</span>
         </button>
         <button onclick="alignFloor()" id="floor-btn" disabled>
             <i class="fas fa-align-center"></i> <span class="btn-label">Auto Floor</span>
@@ -2643,6 +2687,7 @@
                     loadPointCloud(data.pointcloud);
                     document.getElementById('model-status-text').textContent = 'Model: Ready';
                     document.getElementById('export-btn').disabled = false;
+                    document.getElementById('record-scene-btn').disabled = false;
                     document.getElementById('floor-btn').disabled = false;
                     document.getElementById('manual-floor-btn').disabled = false;
                     document.getElementById('camera-mode-btn').disabled = false;
@@ -2727,6 +2772,7 @@
                 document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
                 document.getElementById('model-status-text').textContent = 'Model: Ready';
                 document.getElementById('export-btn').disabled = false;
+                document.getElementById('record-scene-btn').disabled = false;
                 document.getElementById('floor-btn').disabled = false;
                 document.getElementById('manual-floor-btn').disabled = false;
                 document.getElementById('camera-mode-btn').disabled = false;
@@ -2752,6 +2798,7 @@
                         loadPointCloud(data.pointcloud);
                         document.getElementById('model-status-text').textContent = 'Model: Ready';
                         document.getElementById('export-btn').disabled = false;
+                        document.getElementById('record-scene-btn').disabled = false;
                         document.getElementById('floor-btn').disabled = false;
                         document.getElementById('manual-floor-btn').disabled = false;
                         document.getElementById('camera-mode-btn').disabled = false;
@@ -3182,6 +3229,7 @@
                 document.getElementById('points-count').textContent = `Points: ${numPoints.toLocaleString()}`;
                 document.getElementById('model-status-text').textContent = 'Model: Ready';
                 document.getElementById('export-btn').disabled = false;
+                document.getElementById('record-scene-btn').disabled = false;
                 document.getElementById('floor-btn').disabled = false;
                 document.getElementById('manual-floor-btn').disabled = false;
                 document.getElementById('camera-mode-btn').disabled = false;
@@ -3829,6 +3877,102 @@
             if (controls) controls.update(0);
         }
 
+        // Scene recording functionality
+        let sceneRecorder = null;
+        let sceneRecordedChunks = [];
+        let isSceneRecording = false;
+
+        function toggleSceneRecording() {
+            if (isSceneRecording) {
+                stopSceneRecording();
+            } else {
+                startSceneRecording();
+            }
+        }
+
+        function startSceneRecording() {
+            if (!renderer || !renderer.domElement) {
+                alert('No scene to record');
+                return;
+            }
+
+            sceneRecordedChunks = [];
+
+            // Capture the canvas stream
+            const canvas = renderer.domElement;
+            const stream = canvas.captureStream(30); // 30 FPS
+
+            const options = {
+                mimeType: 'video/webm;codecs=vp9',
+                videoBitsPerSecond: 5000000 // 5 Mbps
+            };
+
+            // Fallback to vp8 if vp9 is not supported
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm;codecs=vp8';
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options.mimeType = 'video/webm';
+                }
+            }
+
+            try {
+                sceneRecorder = new MediaRecorder(stream, options);
+
+                sceneRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        sceneRecordedChunks.push(event.data);
+                    }
+                };
+
+                sceneRecorder.onstop = () => {
+                    const blob = new Blob(sceneRecordedChunks, {
+                        type: sceneRecordedChunks[0]?.type || 'video/webm'
+                    });
+
+                    // Create download link
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `scene-recording-${Date.now()}.webm`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+
+                    sceneRecordedChunks = [];
+                };
+
+                sceneRecorder.start(100); // Collect data every 100ms
+                isSceneRecording = true;
+
+                // Update UI
+                const btn = document.getElementById('record-scene-btn');
+                const btnText = document.getElementById('record-scene-text');
+                btn.classList.add('recording');
+                btnText.textContent = 'Stop Recording';
+
+                console.log('Scene recording started');
+            } catch (error) {
+                console.error('Failed to start scene recording:', error);
+                alert('Failed to start recording. Your browser may not support this feature.');
+            }
+        }
+
+        function stopSceneRecording() {
+            if (sceneRecorder && isSceneRecording) {
+                sceneRecorder.stop();
+                isSceneRecording = false;
+
+                // Update UI
+                const btn = document.getElementById('record-scene-btn');
+                const btnText = document.getElementById('record-scene-text');
+                btn.classList.remove('recording');
+                btnText.textContent = 'Record Scene';
+
+                console.log('Scene recording stopped');
+            }
+        }
+
         function disableNavigationControls() {
             if (flyControls) flyControls.enabled = false;
             if (orbitControls) orbitControls.enabled = false;
@@ -4040,11 +4184,11 @@
                     this.setToggleState('video-loop-btn', this.isLooping);
                     this.setToggleState('video-camera-path-btn', this.showCameraPath);
                     this.setToggleState('video-follow-cam-btn', this.followCamera);
-                this.setToggleState('video-frame-only-btn', this.showFrameOnly);
-                this.syncCloudVisibility();
+                    this.setToggleState('video-frame-only-btn', this.showFrameOnly);
+                    this.syncCloudVisibility();
 
-                // Update UI
-                document.getElementById('video-controls').style.display = 'flex';
+                    // Update UI
+                    document.getElementById('video-controls').style.display = 'flex';
                     document.getElementById('frame-slider').max = this.videoInfo.num_frames - 1;
                     document.getElementById('fps-display').textContent = `${this.videoInfo.fps} FPS`;
                     this.updateFrameCounter();
@@ -4052,8 +4196,8 @@
 
                     // Load first frame
                     await this.loadFrame(0);
-                return true;
-            } catch (err) {
+                    return true;
+                } catch (err) {
                     console.error('Failed to load video:', err);
                     return false;
                 }
@@ -5921,24 +6065,24 @@
         // ============================================================================
 
         // Initialize on load
-    window.addEventListener('DOMContentLoaded', async () => {
-        console.log('Initializing Depth Anything 3 UI...');
+        window.addEventListener('DOMContentLoaded', async () => {
+            console.log('Initializing Depth Anything 3 UI...');
 
-        setupCollapsiblePanels();
-        const wInput = document.getElementById('media-override-width');
-        const hInput = document.getElementById('media-override-height');
-        const handleOverrideChange = () => {
-            mediaState.overrideWidth = wInput?.value ? parseInt(wInput.value, 10) || null : null;
-            mediaState.overrideHeight = hInput?.value ? parseInt(hInput.value, 10) || null : null;
-            renderMediaPanel(activePointCloudData?.metadata || {});
-        };
-        if (wInput) wInput.addEventListener('input', handleOverrideChange);
-        if (hInput) hInput.addEventListener('input', handleOverrideChange);
-        updateApiDisplay();
-        const apiPill = document.getElementById('api-base-display');
-        if (apiPill) {
-            apiPill.addEventListener('click', () => {
-                const next = prompt('Enter API base (e.g., http://127.0.0.1:5000)', API_BASE);
+            setupCollapsiblePanels();
+            const wInput = document.getElementById('media-override-width');
+            const hInput = document.getElementById('media-override-height');
+            const handleOverrideChange = () => {
+                mediaState.overrideWidth = wInput?.value ? parseInt(wInput.value, 10) || null : null;
+                mediaState.overrideHeight = hInput?.value ? parseInt(hInput.value, 10) || null : null;
+                renderMediaPanel(activePointCloudData?.metadata || {});
+            };
+            if (wInput) wInput.addEventListener('input', handleOverrideChange);
+            if (hInput) hInput.addEventListener('input', handleOverrideChange);
+            updateApiDisplay();
+            const apiPill = document.getElementById('api-base-display');
+            if (apiPill) {
+                apiPill.addEventListener('click', () => {
+                    const next = prompt('Enter API base (e.g., http://127.0.0.1:5000)', API_BASE);
                     if (next) setApiBase(next);
                 });
             }
