@@ -246,14 +246,15 @@
         .top-bar::before {
             position: fixed;
             content: '';
-            pointer-events:none;
+            pointer-events: none;
             top: 0;
             left: 0;
             right: 0;
-            width:100vw;
+            width: 100vw;
             height: 300px;
             mask: linear-gradient(black, #000e, #000a, #0005, transparent, transparent, transparent);
-            backdrop-filter: blur(20px);z-index: -1;
+            backdrop-filter: blur(20px);
+            z-index: -1;
         }
 
         .top-bar button {
@@ -308,14 +309,15 @@
         .bottom-bar::before {
             position: fixed;
             content: '';
-            pointer-events:none;
+            pointer-events: none;
             bottom: 0;
             left: 0;
             right: 0;
-            width:100vw;
+            width: 100vw;
             height: 300px;
-            mask: linear-gradient(transparent, transparent, transparent,#0005, #000a, #000e, black);
-            backdrop-filter: blur(20px);z-index: -1;
+            mask: linear-gradient(transparent, transparent, transparent, #0005, #000a, #000e, black);
+            backdrop-filter: blur(20px);
+            z-index: -1;
         }
 
         .bottom-bar button {
@@ -365,11 +367,44 @@
                 justify-content: center;
             }
 
-            .top-bar .title .title-text,
-            .top-bar button .btn-label,
-            .bottom-bar button .btn-label {
-                display: none;
-            }
+        .top-bar .title .title-text,
+        .top-bar button .btn-label,
+        .bottom-bar button .btn-label {
+            display: none;
+        }
+        }
+
+        /* Pointcloud icon */
+        .pointcloud-icon {
+            display: inline-flex;
+            width: 26px;
+            height: 26px;
+            margin-right: 6px;
+        }
+
+        .pointcloud-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .pointcloud-icon .pc-dot {
+            fill: #fff;
+            opacity: 0.65;
+            animation: pc-twinkle 2.4s ease-in-out infinite;
+            transform-origin: center;
+        }
+
+        .pointcloud-icon .pc-dot.pc-dot-1 { animation-delay: 0s; }
+        .pointcloud-icon .pc-dot.pc-dot-2 { animation-delay: 0.25s; }
+        .pointcloud-icon .pc-dot.pc-dot-3 { animation-delay: 0.5s; }
+        .pointcloud-icon .pc-dot.pc-dot-4 { animation-delay: 0.75s; }
+        .pointcloud-icon .pc-dot.pc-dot-5 { animation-delay: 1s; }
+        .pointcloud-icon .pc-dot.pc-dot-6 { animation-delay: 1.25s; }
+        .pointcloud-icon .pc-dot.pc-dot-7 { animation-delay: 1.5s; }
+
+        @keyframes pc-twinkle {
+            0%, 100% { opacity: 0.45; transform: translate(0, 0) scale(1); }
+            50% { opacity: 1; transform: translate(0.5px, -0.5px) scale(1.35); }
         }
 
         /* Drag and drop overlay */
@@ -443,6 +478,23 @@
             width: 90%;
             max-height: 80vh;
             overflow-y: auto;
+        }
+
+        /* Config modal specific shell */
+        #config-modal .modal-content {
+            background: #050505;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8);
+        }
+
+        #config-modal .modal-header {
+            border-color: rgba(255, 255, 255, 0.14);
+        }
+
+        #config-modal .modal-header h2 {
+            color: #f8fafc;
+            background: none;
+            letter-spacing: 0.03em;
         }
 
         .modal-header {
@@ -562,81 +614,124 @@
         .config-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 14px;
+            gap: 16px;
         }
 
         .config-section {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 12px;
-            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 14px;
+            padding: 16px;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
         }
 
         .config-section h4 {
-            font-size: 14px;
-            margin-bottom: 6px;
-            color: #93c5fd;
-            letter-spacing: 0.3px;
+            font-size: 12px;
+            margin-bottom: 2px;
+            color: #f1f5f9;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
         }
 
         .config-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 10px;
+            gap: 12px;
             margin: 6px 0;
             font-size: 13px;
         }
 
+        .wrap {
+            display: flex;
+            flex-flow: wrap;
+        }
+
         .config-row label {
-            flex: 1 1 55%;
-            color: #cbd5e1;
+            flex: 1 1 52%;
+            color: #e2e8f0;
+            font-weight: 600;
         }
 
         .config-row input,
         .config-row select {
-            flex: 1 1 45%;
-            background: rgba(0, 0, 0, 0.35);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
-            padding: 7px 8px;
-            color: #fff;
+            flex: 1 1 48%;
+            background: #0b0b0f;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: #f8fafc;
             font-size: 13px;
+            min-height: 38px;
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05);
+            transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .config-row select {
+            appearance: none;
+            background-image: linear-gradient(45deg, transparent 50%, rgba(255, 255, 255, 0.75) 50%), linear-gradient(135deg, rgba(255, 255, 255, 0.75) 50%, transparent 50%);
+            background-position: calc(100% - 18px) calc(50% - 3px), calc(100% - 12px) calc(50% + 3px);
+            background-size: 6px 6px;
+            background-repeat: no-repeat;
+            padding-right: 34px;
+        }
+
+        .config-row input:not([type="checkbox"]):focus,
+        .config-row select:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.4);
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+            background: #111118;
         }
 
         .config-row input[type="checkbox"] {
             flex: 0 0 auto;
             width: 18px;
             height: 18px;
-            accent-color: #3b82f6;
+            accent-color: #fff;
+            border-radius: 4px;
         }
 
         .config-subtext {
             font-size: 12px;
-            color: #94a3b8;
-            margin-top: 4px;
-            line-height: 1.4;
+            color: #cbd5e1;
+            margin-top: 6px;
+            line-height: 1.5;
         }
 
         .config-footer {
             display: flex;
             justify-content: flex-end;
-            gap: 10px;
-            margin-top: 16px;
+            gap: 12px;
+            margin-top: 18px;
         }
 
         .config-footer button {
             padding: 10px 16px;
-            background: rgba(59, 130, 246, 0.25);
-            border: 1px solid rgba(59, 130, 246, 0.6);
+            min-width: 120px;
+            background: #0b0b0f;
+            border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 10px;
-            color: #fff;
+            color: #f8fafc;
             cursor: pointer;
+            font-size: 13px;
+            letter-spacing: 0.01em;
+            transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
         }
 
         .config-footer button.secondary {
+            background: transparent;
+            border-color: rgba(255, 255, 255, 0.14);
+            color: #e2e8f0;
+        }
+
+        .config-footer button:hover {
             background: rgba(255, 255, 255, 0.08);
-            border-color: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255, 255, 255, 0.3);
+            transform: translateY(-1px);
         }
 
         /* Camera modal */
@@ -962,9 +1057,12 @@
         }
 
         @keyframes pulse-recording {
-            0%, 100% {
+
+            0%,
+            100% {
                 opacity: 1;
             }
+
             50% {
                 opacity: 0.3;
             }
@@ -979,7 +1077,18 @@
     <!-- Top button bar -->
     <div class="top-bar">
         <div class="title">
-            <i class="fas fa-cube"></i> <span class="title-text"></span>
+            <span class="pointcloud-icon" aria-hidden="true">
+                <svg viewBox="0 0 28 28" role="presentation">
+                    <circle class="pc-dot pc-dot-1" cx="8" cy="8" r="2"></circle>
+                    <circle class="pc-dot pc-dot-2" cx="14" cy="6" r="1.8"></circle>
+                    <circle class="pc-dot pc-dot-3" cx="20" cy="10" r="2.2"></circle>
+                    <circle class="pc-dot pc-dot-4" cx="7" cy="16" r="1.6"></circle>
+                    <circle class="pc-dot pc-dot-5" cx="14" cy="14" r="2.4"></circle>
+                    <circle class="pc-dot pc-dot-6" cx="21" cy="18" r="1.9"></circle>
+                    <circle class="pc-dot pc-dot-7" cx="12" cy="21" r="1.7"></circle>
+                </svg>
+            </span>
+            <span class="title-text"></span>
         </div>
         <div class="api-pill" id="api-base-display"></div>
         <button onclick="showConfigModal()" id="config-btn">
@@ -1161,7 +1270,7 @@
                         <label for="infer-gs-checkbox">Infer Gaussian Splat</label>
                         <input type="checkbox" id="infer-gs-checkbox">
                     </div>
-                    <div class="config-row">
+                    <div class="config-row wrap">
                         <label for="export-feat-layers">Export Feature Layers</label>
                         <input type="text" id="export-feat-layers" placeholder="e.g. 0,1,2">
                     </div>
@@ -1986,7 +2095,7 @@
             FLY: { background: 'rgba(59, 130, 246, 0.25)', border: 'rgba(59, 130, 246, 0.6)' },
             FPS: { background: 'rgba(16, 185, 129, 0.25)', border: 'rgba(16, 185, 129, 0.6)' }
         };
-        let currentCameraModeIndex = 1; // default to fly controls
+        let currentCameraModeIndex = 0; // default to orbit controls
         let activeCameraMode = CAMERA_MODES[currentCameraModeIndex];
         let pointerLocked = false;
         let holdStartTime = null;
@@ -2051,7 +2160,7 @@
                 }
             });
 
-            // FlyControls (default free-fly camera)
+            // FlyControls (free-fly camera)
             flyControls = new THREE.FlyControls(camera, renderer.domElement);
             flyControls.movementSpeed = 5;           // meters per second (scaled scene units)
             flyControls.rollSpeed = Math.PI / 8;     // softer roll feel
@@ -2080,7 +2189,7 @@
 
             rebuildHelpers(SECTOR_GRID_CONFIG.gridDistance, new THREE.Vector3());
 
-            // Set initial camera mode (fly)
+            // Set initial camera mode (orbit)
             setCameraMode(activeCameraMode);
 
             // Window resize
