@@ -2255,9 +2255,10 @@
                 penumbra: overrides.penumbra !== undefined ? overrides.penumbra : defaults.penumbra,
                 skyColor: overrides.skyColor || defaults.skyColor,
                 groundColor: overrides.groundColor || defaults.groundColor,
-                showHelpers: overrides.showHelpers !== undefined ? overrides.showHelpers : true,
-                showSpline: overrides.showSpline !== undefined ? overrides.showSpline : true,
+                showHelpers: overrides.showHelpers !== undefined ? overrides.showHelpers : false,
+                showSpline: overrides.showSpline !== undefined ? overrides.showSpline : false,
                 collapsed: overrides.collapsed !== undefined ? overrides.collapsed : true,
+                hasOpened: overrides.hasOpened !== undefined ? overrides.hasOpened : false,
                 light: null,
                 helper: null,
                 spline: null,
@@ -2420,8 +2421,9 @@
         }
 
         function updateLightVisibility(lightState) {
-            const helperVisible = lightState.showHelpers && lightState.enabled;
-            const splineVisible = lightState.showSpline && lightState.enabled;
+            const isExpanded = !lightState.collapsed;
+            const helperVisible = isExpanded && lightState.showHelpers && lightState.enabled;
+            const splineVisible = isExpanded && lightState.showSpline && lightState.enabled;
             if (lightState.helper) lightState.helper.visible = helperVisible;
             if (lightState.centerMarker) lightState.centerMarker.visible = helperVisible;
             if (lightState.positionMarker) lightState.positionMarker.visible = helperVisible;
@@ -2549,7 +2551,9 @@
                     name: 'Key Light',
                     position: { x: 10, y: 10, z: 10 },
                     target: { x: 0, y: 0, z: 0 },
-                    collapsed: false
+                    collapsed: true,
+                    showHelpers: false,
+                    showSpline: false
                 });
             } else {
                 sceneLightingState.lights.forEach(lightState => {
@@ -7323,6 +7327,26 @@
 
                 const controls = document.createElement('div');
                 controls.className = 'light-card-controls';
+                let helperInput = null;
+                let splineInput = null;
+
+                const setExpanded = (expanded, fromClick = false) => {
+                    lightState.collapsed = !expanded;
+                    card.classList.toggle('collapsed', !expanded);
+                    if (expanded && !lightState.hasOpened) {
+                        lightState.showHelpers = true;
+                        lightState.showSpline = true;
+                        lightState.hasOpened = true;
+                    }
+                    if (fromClick && expanded) {
+                        lightState.showHelpers = true;
+                        lightState.showSpline = true;
+                        lightState.hasOpened = true;
+                    }
+                    updateLightObjects(lightState);
+                    if (helperInput) helperInput.checked = lightState.showHelpers;
+                    if (splineInput) splineInput.checked = lightState.showSpline;
+                };
 
                 const enabledLabel = document.createElement('label');
                 enabledLabel.className = 'light-checkbox';
@@ -7354,15 +7378,13 @@
                 toggleBtn.innerHTML = '<i class="fas fa-chevron-down"></i>';
                 toggleBtn.addEventListener('click', (event) => {
                     event.stopPropagation();
-                    lightState.collapsed = !lightState.collapsed;
-                    card.classList.toggle('collapsed');
+                    setExpanded(lightState.collapsed, true);
                 });
                 controls.appendChild(toggleBtn);
 
                 header.appendChild(controls);
                 header.addEventListener('click', () => {
-                    lightState.collapsed = !lightState.collapsed;
-                    card.classList.toggle('collapsed');
+                    setExpanded(lightState.collapsed, true);
                 });
                 card.appendChild(header);
 
@@ -7609,7 +7631,7 @@
                     const helperRow = makeRow('Helpers');
                     const helperToggle = document.createElement('label');
                     helperToggle.className = 'light-checkbox';
-                    const helperInput = document.createElement('input');
+                    helperInput = document.createElement('input');
                     helperInput.type = 'checkbox';
                     helperInput.checked = lightState.showHelpers;
                     helperInput.addEventListener('change', () => {
@@ -7621,7 +7643,7 @@
 
                     const splineToggle = document.createElement('label');
                     splineToggle.className = 'light-checkbox';
-                    const splineInput = document.createElement('input');
+                    splineInput = document.createElement('input');
                     splineInput.type = 'checkbox';
                     splineInput.checked = lightState.showSpline;
                     splineInput.addEventListener('change', () => {
@@ -7638,6 +7660,7 @@
 
                 card.appendChild(body);
                 list.appendChild(card);
+                setExpanded(!lightState.collapsed);
             });
         }
 
