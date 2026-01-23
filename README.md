@@ -16,7 +16,7 @@ and in a seperate terminal to host frontend:
 cd docs && python3 server.py
 ```
 
-## We reccomend using [Chromium](https://www.chromium.org/chromium-projects/) due to built in local network adapter support.
+## We recommend using [Chromium](https://www.chromium.org/chromium-projects/) due to built in local network adapter support.
 
 Enter the IP of the device on the local network (i.e. http:192.188.1.25:5000 or whatever looks similar) Produced by app.py on startup in the earlier step
 
