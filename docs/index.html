@@ -921,6 +921,192 @@
             line-height: 1.4;
         }
 
+        /* Scene lighting panel */
+        #scene-lighting-panel .lighting-add-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #scene-lighting-panel .lighting-add-row select,
+        #scene-lighting-panel .light-input,
+        #scene-lighting-panel .light-select {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 12px;
+            padding: 6px 8px;
+        }
+
+        #scene-lighting-panel .light-input {
+            width: 100%;
+            min-width: 0;
+        }
+
+        #scene-lighting-panel .light-select {
+            width: 100%;
+            min-width: 0;
+        }
+
+        #scene-lighting-panel .lighting-add-row select {
+            flex: 1;
+            min-width: 0;
+        }
+
+        #scene-lighting-panel .light-add-btn {
+            padding: 6px 10px;
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(59, 130, 246, 0.6);
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        #scene-lighting-panel .light-add-btn:hover {
+            background: rgba(59, 130, 246, 0.35);
+            border-color: rgba(59, 130, 246, 0.7);
+        }
+
+        #scene-lighting-panel .lighting-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        #scene-lighting-panel .light-card {
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            overflow: hidden;
+        }
+
+        #scene-lighting-panel .light-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            background: rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+        }
+
+        #scene-lighting-panel .light-card-title {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #dbeafe;
+        }
+
+        #scene-lighting-panel .light-card-meta {
+            font-size: 10px;
+            opacity: 0.7;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        #scene-lighting-panel .light-card-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        #scene-lighting-panel .light-card-toggle {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #fff;
+            width: 28px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        #scene-lighting-panel .light-card.collapsed .light-card-toggle i {
+            transform: rotate(-90deg);
+        }
+
+        #scene-lighting-panel .light-card-body {
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #scene-lighting-panel .light-card.collapsed .light-card-body {
+            display: none;
+        }
+
+        #scene-lighting-panel .light-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #scene-lighting-panel .light-row-label {
+            width: 70px;
+            font-size: 11px;
+            color: #cbd5ff;
+        }
+
+        #scene-lighting-panel .light-vector-grid {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+        }
+
+        #scene-lighting-panel .light-range {
+            flex: 1;
+        }
+
+        #scene-lighting-panel .light-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            color: #cbd5ff;
+        }
+
+        #scene-lighting-panel .light-color-input {
+            width: 42px;
+            height: 28px;
+            padding: 0;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.08);
+            cursor: pointer;
+        }
+
+        #scene-lighting-panel .light-delete-btn {
+            padding: 4px 6px;
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.55);
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        #scene-lighting-panel .light-delete-btn:hover {
+            background: rgba(239, 68, 68, 0.35);
+            border-color: rgba(239, 68, 68, 0.7);
+        }
+
+        #scene-lighting-panel .light-empty {
+            font-size: 11px;
+            opacity: 0.7;
+            line-height: 1.4;
+        }
+
         /* Session panel styles to match media inputs/buttons */
         #scene-session-panel .session-select {
             background: rgba(255, 255, 255, 0.06);
@@ -1505,6 +1691,23 @@
             containerSize: null
         };
 
+        const LIGHT_TYPE_OPTIONS = [
+            { id: 'ambient', label: 'Ambient' },
+            { id: 'directional', label: 'Directional' },
+            { id: 'point', label: 'Point' },
+            { id: 'spot', label: 'Spot' },
+            { id: 'hemisphere', label: 'Hemisphere' }
+        ];
+
+        const sceneLightingState = {
+            lights: [],
+            nextId: 1,
+            group: null,
+            helperGroup: null,
+            splineGroup: null,
+            markerGroup: null
+        };
+
         // Scene sessions allow you to keep multiple uploads isolated and switch between them.
         const sessionStore = {
             sessions: [],
@@ -1962,6 +2165,399 @@
             scene.add(floorPlane);
         }
 
+        function parseNumericInput(value) {
+            const parsed = parseFloat(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        function formatNumericInput(value, digits = 2) {
+            if (!Number.isFinite(value)) return '';
+            return value.toFixed(digits);
+        }
+
+        function getLightTypeLabel(type) {
+            const match = LIGHT_TYPE_OPTIONS.find(option => option.id === type);
+            return match ? match.label : type;
+        }
+
+        function getLightDefaults(type) {
+            const base = {
+                color: '#ffffff',
+                intensity: 0.7,
+                position: { x: 6, y: 6, z: 6 },
+                center: { x: 0, y: 0, z: 0 },
+                target: { x: 0, y: 0, z: 0 },
+                distance: 0,
+                decay: 2,
+                angle: 35,
+                penumbra: 0.2,
+                skyColor: '#ffffff',
+                groundColor: '#111827'
+            };
+
+            switch (type) {
+                case 'ambient':
+                    return { ...base, intensity: 0.6 };
+                case 'directional':
+                    return { ...base, intensity: 0.8, position: { x: 8, y: 10, z: 8 } };
+                case 'point':
+                    return { ...base, intensity: 0.7, position: { x: 4, y: 6, z: 3 } };
+                case 'spot':
+                    return { ...base, intensity: 0.9, position: { x: 6, y: 8, z: 4 }, angle: 30 };
+                case 'hemisphere':
+                    return { ...base, intensity: 0.5, position: { x: 0, y: 10, z: 0 }, groundColor: '#1f2937' };
+                default:
+                    return base;
+            }
+        }
+
+        function computeLightRadius(center, position) {
+            const centerVec = new THREE.Vector3(center.x, center.y, center.z);
+            const posVec = new THREE.Vector3(position.x, position.y, position.z);
+            return centerVec.distanceTo(posVec);
+        }
+
+        function applyLightRadius(lightState, radius) {
+            const safeRadius = Math.max(0, radius);
+            const center = lightState.center;
+            const centerVec = new THREE.Vector3(center.x, center.y, center.z);
+            const direction = new THREE.Vector3(
+                lightState.position.x - center.x,
+                lightState.position.y - center.y,
+                lightState.position.z - center.z
+            );
+            if (direction.length() < 0.001) {
+                direction.set(1, 0, 0);
+            }
+            direction.normalize().multiplyScalar(safeRadius);
+            const nextPos = centerVec.clone().add(direction);
+            lightState.position = { x: nextPos.x, y: nextPos.y, z: nextPos.z };
+            lightState.radius = safeRadius;
+        }
+
+        function createLightState(type, overrides = {}) {
+            const defaults = getLightDefaults(type);
+            const id = `light-${sceneLightingState.nextId++}`;
+            const lightState = {
+                id,
+                type,
+                name: overrides.name || `${getLightTypeLabel(type)} ${sceneLightingState.nextId - 1}`,
+                enabled: overrides.enabled !== undefined ? overrides.enabled : true,
+                color: overrides.color || defaults.color,
+                intensity: overrides.intensity !== undefined ? overrides.intensity : defaults.intensity,
+                position: { ...defaults.position, ...(overrides.position || {}) },
+                center: { ...defaults.center, ...(overrides.center || {}) },
+                target: { ...defaults.target, ...(overrides.target || {}) },
+                distance: overrides.distance !== undefined ? overrides.distance : defaults.distance,
+                decay: overrides.decay !== undefined ? overrides.decay : defaults.decay,
+                angle: overrides.angle !== undefined ? overrides.angle : defaults.angle,
+                penumbra: overrides.penumbra !== undefined ? overrides.penumbra : defaults.penumbra,
+                skyColor: overrides.skyColor || defaults.skyColor,
+                groundColor: overrides.groundColor || defaults.groundColor,
+                showHelpers: overrides.showHelpers !== undefined ? overrides.showHelpers : true,
+                showSpline: overrides.showSpline !== undefined ? overrides.showSpline : true,
+                collapsed: overrides.collapsed !== undefined ? overrides.collapsed : true,
+                light: null,
+                helper: null,
+                spline: null,
+                centerMarker: null,
+                positionMarker: null,
+                targetMarker: null
+            };
+            lightState.radius = overrides.radius !== undefined ? overrides.radius : computeLightRadius(lightState.center, lightState.position);
+            return lightState;
+        }
+
+        function disposeLightObject(obj) {
+            if (!obj) return;
+            if (obj.geometry && obj.geometry.dispose) obj.geometry.dispose();
+            if (obj.material) {
+                if (Array.isArray(obj.material)) {
+                    obj.material.forEach(mat => mat && mat.dispose && mat.dispose());
+                } else if (obj.material.dispose) {
+                    obj.material.dispose();
+                }
+            }
+        }
+
+        function createLightMarker(colorHex = 0x60a5fa, size = 0.08) {
+            const geometry = new THREE.SphereGeometry(size, 12, 12);
+            const material = new THREE.MeshBasicMaterial({ color: colorHex });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.renderOrder = 2;
+            return mesh;
+        }
+
+        function buildLightSpline(start, end) {
+            const distance = start.distanceTo(end);
+            const mid = start.clone().lerp(end, 0.5);
+            mid.y += Math.max(0.4, distance * 0.08);
+            const curve = new THREE.CatmullRomCurve3([start, mid, end]);
+            const points = curve.getPoints(24);
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const material = new THREE.LineBasicMaterial({
+                color: 0x38bdf8,
+                transparent: true,
+                opacity: 0.7
+            });
+            const line = new THREE.Line(geometry, material);
+            line.renderOrder = 1;
+            return line;
+        }
+
+        function buildLightInstance(lightState) {
+            const type = lightState.type;
+            switch (type) {
+                case 'ambient':
+                    return new THREE.AmbientLight(lightState.color, lightState.intensity);
+                case 'directional':
+                    return new THREE.DirectionalLight(lightState.color, lightState.intensity);
+                case 'point':
+                    return new THREE.PointLight(lightState.color, lightState.intensity, lightState.distance, lightState.decay);
+                case 'spot':
+                    return new THREE.SpotLight(
+                        lightState.color,
+                        lightState.intensity,
+                        lightState.distance,
+                        THREE.MathUtils.degToRad(lightState.angle),
+                        lightState.penumbra,
+                        lightState.decay
+                    );
+                case 'hemisphere':
+                    return new THREE.HemisphereLight(lightState.skyColor, lightState.groundColor, lightState.intensity);
+                default:
+                    return new THREE.AmbientLight(lightState.color, lightState.intensity);
+            }
+        }
+
+        function attachLightObjects(lightState) {
+            if (!sceneLightingState.group) return;
+            const light = buildLightInstance(lightState);
+            lightState.light = light;
+            sceneLightingState.group.add(light);
+
+            if (lightState.type === 'directional' || lightState.type === 'spot') {
+                sceneLightingState.group.add(light.target);
+            }
+
+            lightState.helper = null;
+            if (lightState.type === 'directional') {
+                lightState.helper = new THREE.DirectionalLightHelper(light, 1, 0x93c5fd);
+            } else if (lightState.type === 'point') {
+                lightState.helper = new THREE.PointLightHelper(light, 0.3, 0xf59e0b);
+            } else if (lightState.type === 'spot') {
+                lightState.helper = new THREE.SpotLightHelper(light, 0xf59e0b);
+            } else if (lightState.type === 'hemisphere') {
+                lightState.helper = new THREE.HemisphereLightHelper(light, 0.8);
+            }
+            if (lightState.helper) {
+                sceneLightingState.helperGroup.add(lightState.helper);
+            }
+
+            if (lightState.type !== 'ambient') {
+                lightState.centerMarker = createLightMarker(0x60a5fa);
+                lightState.positionMarker = createLightMarker(0xf59e0b);
+                sceneLightingState.markerGroup.add(lightState.centerMarker);
+                sceneLightingState.markerGroup.add(lightState.positionMarker);
+                if (lightState.type === 'directional' || lightState.type === 'spot') {
+                    lightState.targetMarker = createLightMarker(0x34d399);
+                    sceneLightingState.markerGroup.add(lightState.targetMarker);
+                }
+                lightState.spline = buildLightSpline(
+                    new THREE.Vector3(lightState.center.x, lightState.center.y, lightState.center.z),
+                    new THREE.Vector3(lightState.position.x, lightState.position.y, lightState.position.z)
+                );
+                sceneLightingState.splineGroup.add(lightState.spline);
+            }
+        }
+
+        function detachLightObjects(lightState) {
+            if (lightState.light) {
+                if (sceneLightingState.group) {
+                    sceneLightingState.group.remove(lightState.light);
+                    if (lightState.light.target) {
+                        sceneLightingState.group.remove(lightState.light.target);
+                    }
+                }
+            }
+            if (lightState.helper) {
+                if (sceneLightingState.helperGroup) {
+                    sceneLightingState.helperGroup.remove(lightState.helper);
+                }
+            }
+            if (lightState.spline) {
+                if (sceneLightingState.splineGroup) {
+                    sceneLightingState.splineGroup.remove(lightState.spline);
+                }
+                disposeLightObject(lightState.spline);
+            }
+            if (lightState.centerMarker) {
+                if (sceneLightingState.markerGroup) {
+                    sceneLightingState.markerGroup.remove(lightState.centerMarker);
+                }
+                disposeLightObject(lightState.centerMarker);
+            }
+            if (lightState.positionMarker) {
+                if (sceneLightingState.markerGroup) {
+                    sceneLightingState.markerGroup.remove(lightState.positionMarker);
+                }
+                disposeLightObject(lightState.positionMarker);
+            }
+            if (lightState.targetMarker) {
+                if (sceneLightingState.markerGroup) {
+                    sceneLightingState.markerGroup.remove(lightState.targetMarker);
+                }
+                disposeLightObject(lightState.targetMarker);
+            }
+
+            lightState.light = null;
+            lightState.helper = null;
+            lightState.spline = null;
+            lightState.centerMarker = null;
+            lightState.positionMarker = null;
+            lightState.targetMarker = null;
+        }
+
+        function updateLightVisibility(lightState) {
+            const helperVisible = lightState.showHelpers && lightState.enabled;
+            const splineVisible = lightState.showSpline && lightState.enabled;
+            if (lightState.helper) lightState.helper.visible = helperVisible;
+            if (lightState.centerMarker) lightState.centerMarker.visible = helperVisible;
+            if (lightState.positionMarker) lightState.positionMarker.visible = helperVisible;
+            if (lightState.targetMarker) lightState.targetMarker.visible = helperVisible;
+            if (lightState.spline) lightState.spline.visible = splineVisible;
+        }
+
+        function updateLightSpline(lightState) {
+            if (!lightState.spline) return;
+            const start = new THREE.Vector3(lightState.center.x, lightState.center.y, lightState.center.z);
+            const end = new THREE.Vector3(lightState.position.x, lightState.position.y, lightState.position.z);
+            const newLine = buildLightSpline(start, end);
+            lightState.spline.geometry.dispose();
+            lightState.spline.geometry = newLine.geometry;
+            lightState.spline.material.dispose();
+            lightState.spline.material = newLine.material;
+        }
+
+        function updateLightObjects(lightState) {
+            if (!lightState.light) return;
+            if (lightState.type === 'hemisphere') {
+                lightState.light.color.set(lightState.skyColor);
+                lightState.light.groundColor.set(lightState.groundColor);
+            } else {
+                lightState.light.color.set(lightState.color);
+            }
+            lightState.light.intensity = lightState.intensity;
+
+            if (lightState.type !== 'ambient') {
+                lightState.light.position.set(lightState.position.x, lightState.position.y, lightState.position.z);
+            }
+
+            if (lightState.type === 'point' || lightState.type === 'spot') {
+                lightState.light.distance = lightState.distance;
+                lightState.light.decay = lightState.decay;
+            }
+
+            if (lightState.type === 'spot') {
+                lightState.light.angle = THREE.MathUtils.degToRad(lightState.angle);
+                lightState.light.penumbra = lightState.penumbra;
+            }
+
+            if (lightState.type === 'directional' || lightState.type === 'spot') {
+                lightState.light.target.position.set(lightState.target.x, lightState.target.y, lightState.target.z);
+                lightState.light.target.updateMatrixWorld();
+            }
+
+            if (lightState.centerMarker) {
+                lightState.centerMarker.position.set(lightState.center.x, lightState.center.y, lightState.center.z);
+            }
+            if (lightState.positionMarker) {
+                lightState.positionMarker.position.set(lightState.position.x, lightState.position.y, lightState.position.z);
+            }
+            if (lightState.targetMarker) {
+                lightState.targetMarker.position.set(lightState.target.x, lightState.target.y, lightState.target.z);
+            }
+
+            updateLightSpline(lightState);
+            updateLightVisibility(lightState);
+
+            if (lightState.helper) {
+                lightState.helper.update();
+            }
+
+            lightState.light.visible = lightState.enabled;
+        }
+
+        function addSceneLight(type, overrides = {}) {
+            const lightState = createLightState(type, overrides);
+            sceneLightingState.lights.push(lightState);
+            attachLightObjects(lightState);
+            updateLightObjects(lightState);
+            renderSceneLightingList();
+            return lightState;
+        }
+
+        function removeSceneLight(lightId) {
+            const index = sceneLightingState.lights.findIndex(light => light.id === lightId);
+            if (index === -1) return;
+            const [lightState] = sceneLightingState.lights.splice(index, 1);
+            detachLightObjects(lightState);
+            renderSceneLightingList();
+        }
+
+        function changeSceneLightType(lightState, newType) {
+            if (lightState.type === newType) return;
+            detachLightObjects(lightState);
+            const defaults = getLightDefaults(newType);
+            lightState.type = newType;
+            lightState.color = lightState.color || defaults.color;
+            lightState.intensity = lightState.intensity !== undefined ? lightState.intensity : defaults.intensity;
+            lightState.position = { ...defaults.position, ...lightState.position };
+            lightState.center = { ...defaults.center, ...lightState.center };
+            lightState.target = { ...defaults.target, ...lightState.target };
+            lightState.distance = lightState.distance !== undefined ? lightState.distance : defaults.distance;
+            lightState.decay = lightState.decay !== undefined ? lightState.decay : defaults.decay;
+            lightState.angle = lightState.angle !== undefined ? lightState.angle : defaults.angle;
+            lightState.penumbra = lightState.penumbra !== undefined ? lightState.penumbra : defaults.penumbra;
+            lightState.skyColor = lightState.skyColor || defaults.skyColor;
+            lightState.groundColor = lightState.groundColor || defaults.groundColor;
+            lightState.radius = computeLightRadius(lightState.center, lightState.position);
+            attachLightObjects(lightState);
+            updateLightObjects(lightState);
+        }
+
+        function initLightingSystem() {
+            if (!scene || sceneLightingState.group) return;
+            sceneLightingState.group = new THREE.Group();
+            sceneLightingState.group.name = 'scene-lighting';
+            sceneLightingState.helperGroup = new THREE.Group();
+            sceneLightingState.helperGroup.name = 'scene-lighting-helpers';
+            sceneLightingState.splineGroup = new THREE.Group();
+            sceneLightingState.splineGroup.name = 'scene-lighting-splines';
+            sceneLightingState.markerGroup = new THREE.Group();
+            sceneLightingState.markerGroup.name = 'scene-lighting-markers';
+
+            scene.add(sceneLightingState.group);
+            scene.add(sceneLightingState.helperGroup);
+            scene.add(sceneLightingState.splineGroup);
+            scene.add(sceneLightingState.markerGroup);
+
+            if (sceneLightingState.lights.length === 0) {
+                addSceneLight('ambient', { name: 'Ambient Fill', collapsed: true, showHelpers: false, showSpline: false });
+                addSceneLight('directional', {
+                    name: 'Key Light',
+                    position: { x: 10, y: 10, z: 10 },
+                    target: { x: 0, y: 0, z: 0 },
+                    collapsed: false
+                });
+            } else {
+                sceneLightingState.lights.forEach(lightState => {
+                    attachLightObjects(lightState);
+                    updateLightObjects(lightState);
+                });
+            }
+        }
+
         function ensureSidePanelStack() {
             let stack = document.getElementById('side-panel-stack');
             if (!stack) {
@@ -2181,12 +2777,7 @@
             orbitControls.target.set(0, 0, 0);
 
             // Lights
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-            scene.add(ambientLight);
-
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-            directionalLight.position.set(10, 10, 10);
-            scene.add(directionalLight);
+            initLightingSystem();
 
             rebuildHelpers(SECTOR_GRID_CONFIG.gridDistance, new THREE.Vector3());
 
@@ -6650,6 +7241,411 @@
             }
         }
 
+        function createSceneLightingPanel() {
+            const existing = document.getElementById('scene-lighting-panel');
+            if (existing) existing.remove();
+
+            const { panel, body } = createCollapsiblePanelShell('scene-lighting-panel', 'Scene Lighting', 'fa-lightbulb');
+            const stack = ensureSidePanelStack();
+
+            const addRow = document.createElement('div');
+            addRow.className = 'lighting-add-row';
+
+            const typeSelect = document.createElement('select');
+            typeSelect.className = 'light-select';
+            typeSelect.id = 'scene-lighting-type-select';
+            LIGHT_TYPE_OPTIONS.forEach(option => {
+                const opt = document.createElement('option');
+                opt.value = option.id;
+                opt.textContent = option.label;
+                typeSelect.appendChild(opt);
+            });
+            typeSelect.value = 'directional';
+            addRow.appendChild(typeSelect);
+
+            const addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.className = 'light-add-btn';
+            addBtn.textContent = '+ Add Light';
+            addBtn.addEventListener('click', () => {
+                addSceneLight(typeSelect.value);
+            });
+            addRow.appendChild(addBtn);
+            body.appendChild(addRow);
+
+            const list = document.createElement('div');
+            list.className = 'lighting-list';
+            list.id = 'scene-lighting-list';
+            body.appendChild(list);
+
+            const note = document.createElement('div');
+            note.className = 'scene-align-note';
+            note.textContent = 'Spline helpers visualize the arc from center to light, with target markers for aim.';
+            body.appendChild(note);
+
+            stack.appendChild(panel);
+            renderSceneLightingList();
+        }
+
+        function renderSceneLightingList() {
+            const list = document.getElementById('scene-lighting-list');
+            if (!list) return;
+
+            list.innerHTML = '';
+
+            if (!sceneLightingState.lights.length) {
+                const empty = document.createElement('div');
+                empty.className = 'light-empty';
+                empty.textContent = 'No lights yet. Add a light above to begin tuning.';
+                list.appendChild(empty);
+                return;
+            }
+
+            sceneLightingState.lights.forEach(lightState => {
+                const card = document.createElement('div');
+                card.className = 'light-card';
+                if (lightState.collapsed) card.classList.add('collapsed');
+
+                const header = document.createElement('div');
+                header.className = 'light-card-header';
+
+                const titleWrap = document.createElement('div');
+                titleWrap.className = 'light-card-title';
+                const titleText = document.createElement('span');
+                titleText.textContent = lightState.name || 'Light';
+                const metaText = document.createElement('span');
+                metaText.className = 'light-card-meta';
+                metaText.textContent = getLightTypeLabel(lightState.type);
+                titleWrap.appendChild(titleText);
+                titleWrap.appendChild(metaText);
+                header.appendChild(titleWrap);
+
+                const controls = document.createElement('div');
+                controls.className = 'light-card-controls';
+
+                const enabledLabel = document.createElement('label');
+                enabledLabel.className = 'light-checkbox';
+                const enabledInput = document.createElement('input');
+                enabledInput.type = 'checkbox';
+                enabledInput.checked = lightState.enabled;
+                enabledInput.addEventListener('click', (event) => event.stopPropagation());
+                enabledInput.addEventListener('change', (event) => {
+                    lightState.enabled = event.target.checked;
+                    updateLightObjects(lightState);
+                });
+                enabledLabel.appendChild(enabledInput);
+                enabledLabel.appendChild(document.createTextNode('On'));
+                controls.appendChild(enabledLabel);
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.type = 'button';
+                deleteBtn.className = 'light-delete-btn';
+                deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+                deleteBtn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    removeSceneLight(lightState.id);
+                });
+                controls.appendChild(deleteBtn);
+
+                const toggleBtn = document.createElement('button');
+                toggleBtn.type = 'button';
+                toggleBtn.className = 'light-card-toggle';
+                toggleBtn.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                toggleBtn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    lightState.collapsed = !lightState.collapsed;
+                    card.classList.toggle('collapsed');
+                });
+                controls.appendChild(toggleBtn);
+
+                header.appendChild(controls);
+                header.addEventListener('click', () => {
+                    lightState.collapsed = !lightState.collapsed;
+                    card.classList.toggle('collapsed');
+                });
+                card.appendChild(header);
+
+                const body = document.createElement('div');
+                body.className = 'light-card-body';
+
+                const makeRow = (labelText) => {
+                    const row = document.createElement('div');
+                    row.className = 'light-row';
+                    const label = document.createElement('div');
+                    label.className = 'light-row-label';
+                    label.textContent = labelText;
+                    row.appendChild(label);
+                    return { row, label };
+                };
+
+                const makeNumberInput = (value, step = 0.1, min = null, max = null) => {
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.className = 'light-input';
+                    input.step = step;
+                    input.value = Number.isFinite(value) ? value : 0;
+                    if (min !== null) input.min = min;
+                    if (max !== null) input.max = max;
+                    return input;
+                };
+
+                const makeVectorRow = (labelText, values, onChange) => {
+                    const { row } = makeRow(labelText);
+                    const grid = document.createElement('div');
+                    grid.className = 'light-vector-grid';
+                    const inputs = {};
+                    ['x', 'y', 'z'].forEach(axis => {
+                        const input = makeNumberInput(values[axis], 0.1);
+                        input.placeholder = axis;
+                        input.addEventListener('input', () => {
+                            const nextValue = parseNumericInput(input.value);
+                            if (nextValue === null) return;
+                            onChange(axis, nextValue);
+                        });
+                        inputs[axis] = input;
+                        grid.appendChild(input);
+                    });
+                    row.appendChild(grid);
+                    return { row, inputs };
+                };
+
+                const nameRow = makeRow('Name');
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.className = 'light-input';
+                nameInput.value = lightState.name || '';
+                nameInput.addEventListener('input', () => {
+                    lightState.name = nameInput.value;
+                    titleText.textContent = lightState.name || 'Light';
+                });
+                nameRow.row.appendChild(nameInput);
+                body.appendChild(nameRow.row);
+
+                const typeRow = makeRow('Type');
+                const typeSelect = document.createElement('select');
+                typeSelect.className = 'light-select';
+                LIGHT_TYPE_OPTIONS.forEach(option => {
+                    const opt = document.createElement('option');
+                    opt.value = option.id;
+                    opt.textContent = option.label;
+                    if (option.id === lightState.type) opt.selected = true;
+                    typeSelect.appendChild(opt);
+                });
+                typeSelect.addEventListener('change', () => {
+                    changeSceneLightType(lightState, typeSelect.value);
+                    renderSceneLightingList();
+                });
+                typeRow.row.appendChild(typeSelect);
+                body.appendChild(typeRow.row);
+
+                if (lightState.type === 'hemisphere') {
+                    const skyRow = makeRow('Sky');
+                    const skyInput = document.createElement('input');
+                    skyInput.type = 'color';
+                    skyInput.className = 'light-color-input';
+                    skyInput.value = lightState.skyColor;
+                    skyInput.addEventListener('input', () => {
+                        lightState.skyColor = skyInput.value;
+                        updateLightObjects(lightState);
+                    });
+                    skyRow.row.appendChild(skyInput);
+                    body.appendChild(skyRow.row);
+
+                    const groundRow = makeRow('Ground');
+                    const groundInput = document.createElement('input');
+                    groundInput.type = 'color';
+                    groundInput.className = 'light-color-input';
+                    groundInput.value = lightState.groundColor;
+                    groundInput.addEventListener('input', () => {
+                        lightState.groundColor = groundInput.value;
+                        updateLightObjects(lightState);
+                    });
+                    groundRow.row.appendChild(groundInput);
+                    body.appendChild(groundRow.row);
+                } else {
+                    const colorRow = makeRow('Color');
+                    const colorInput = document.createElement('input');
+                    colorInput.type = 'color';
+                    colorInput.className = 'light-color-input';
+                    colorInput.value = lightState.color;
+                    colorInput.addEventListener('input', () => {
+                        lightState.color = colorInput.value;
+                        updateLightObjects(lightState);
+                    });
+                    colorRow.row.appendChild(colorInput);
+                    body.appendChild(colorRow.row);
+                }
+
+                const intensityRow = makeRow('Intensity');
+                const intensityInput = makeNumberInput(lightState.intensity, 0.1, 0);
+                intensityInput.addEventListener('input', () => {
+                    const nextValue = parseNumericInput(intensityInput.value);
+                    if (nextValue === null) return;
+                    lightState.intensity = nextValue;
+                    updateLightObjects(lightState);
+                });
+                intensityRow.row.appendChild(intensityInput);
+                body.appendChild(intensityRow.row);
+
+                if (lightState.type !== 'ambient') {
+                    const centerRow = makeVectorRow('Center', lightState.center, (axis, value) => {
+                        lightState.center[axis] = value;
+                        lightState.radius = computeLightRadius(lightState.center, lightState.position);
+                        syncRadiusInputs(lightState.radius);
+                        updateLightObjects(lightState);
+                    });
+                    const positionRow = makeVectorRow('Position', lightState.position, (axis, value) => {
+                        lightState.position[axis] = value;
+                        lightState.radius = computeLightRadius(lightState.center, lightState.position);
+                        syncRadiusInputs(lightState.radius);
+                        updateLightObjects(lightState);
+                    });
+
+                    const radiusRow = makeRow('Radius');
+                    const radiusSlider = document.createElement('input');
+                    radiusSlider.type = 'range';
+                    radiusSlider.className = 'light-range';
+                    radiusSlider.min = 0;
+                    radiusSlider.max = 50;
+                    radiusSlider.step = 0.1;
+                    radiusSlider.value = lightState.radius;
+
+                    const radiusInput = makeNumberInput(lightState.radius, 0.1, 0);
+
+                    const syncRadiusInputs = (value) => {
+                        radiusSlider.value = value;
+                        radiusInput.value = formatNumericInput(value);
+                    };
+
+                    const syncPositionInputs = () => {
+                        positionRow.inputs.x.value = formatNumericInput(lightState.position.x);
+                        positionRow.inputs.y.value = formatNumericInput(lightState.position.y);
+                        positionRow.inputs.z.value = formatNumericInput(lightState.position.z);
+                    };
+
+                    radiusSlider.addEventListener('input', () => {
+                        const nextValue = parseNumericInput(radiusSlider.value);
+                        if (nextValue === null) return;
+                        applyLightRadius(lightState, nextValue);
+                        syncRadiusInputs(lightState.radius);
+                        syncPositionInputs();
+                        updateLightObjects(lightState);
+                    });
+                    radiusInput.addEventListener('input', () => {
+                        const nextValue = parseNumericInput(radiusInput.value);
+                        if (nextValue === null) return;
+                        applyLightRadius(lightState, nextValue);
+                        syncRadiusInputs(lightState.radius);
+                        syncPositionInputs();
+                        updateLightObjects(lightState);
+                    });
+
+                    syncRadiusInputs(lightState.radius);
+
+                    radiusRow.row.appendChild(radiusSlider);
+                    radiusRow.row.appendChild(radiusInput);
+
+                    body.appendChild(centerRow.row);
+                    body.appendChild(positionRow.row);
+                    body.appendChild(radiusRow.row);
+
+                    if (lightState.type === 'directional' || lightState.type === 'spot') {
+                        const targetRow = makeVectorRow('Target', lightState.target, (axis, value) => {
+                            lightState.target[axis] = value;
+                            updateLightObjects(lightState);
+                        });
+                        body.appendChild(targetRow.row);
+                    }
+
+                    if (lightState.type === 'point' || lightState.type === 'spot') {
+                        const distanceRow = makeRow('Distance');
+                        const distanceInput = makeNumberInput(lightState.distance, 0.5, 0);
+                        distanceInput.addEventListener('input', () => {
+                            const nextValue = parseNumericInput(distanceInput.value);
+                            if (nextValue === null) return;
+                            lightState.distance = nextValue;
+                            updateLightObjects(lightState);
+                        });
+                        distanceRow.row.appendChild(distanceInput);
+                        body.appendChild(distanceRow.row);
+
+                        const decayRow = makeRow('Decay');
+                        const decayInput = makeNumberInput(lightState.decay, 0.1, 0);
+                        decayInput.addEventListener('input', () => {
+                            const nextValue = parseNumericInput(decayInput.value);
+                            if (nextValue === null) return;
+                            lightState.decay = nextValue;
+                            updateLightObjects(lightState);
+                        });
+                        decayRow.row.appendChild(decayInput);
+                        body.appendChild(decayRow.row);
+                    }
+
+                    if (lightState.type === 'spot') {
+                        const angleRow = makeRow('Angle');
+                        const angleInput = makeNumberInput(lightState.angle, 1, 1, 90);
+                        angleInput.addEventListener('input', () => {
+                            const nextValue = parseNumericInput(angleInput.value);
+                            if (nextValue === null) return;
+                            lightState.angle = nextValue;
+                            updateLightObjects(lightState);
+                        });
+                        angleRow.row.appendChild(angleInput);
+                        body.appendChild(angleRow.row);
+
+                        const penumbraRow = makeRow('Penumbra');
+                        const penumbraInput = makeNumberInput(lightState.penumbra, 0.05, 0, 1);
+                        penumbraInput.addEventListener('input', () => {
+                            const nextValue = parseNumericInput(penumbraInput.value);
+                            if (nextValue === null) return;
+                            lightState.penumbra = nextValue;
+                            updateLightObjects(lightState);
+                        });
+                        penumbraRow.row.appendChild(penumbraInput);
+                        body.appendChild(penumbraRow.row);
+                    }
+
+                    const helperRow = makeRow('Helpers');
+                    const helperToggle = document.createElement('label');
+                    helperToggle.className = 'light-checkbox';
+                    const helperInput = document.createElement('input');
+                    helperInput.type = 'checkbox';
+                    helperInput.checked = lightState.showHelpers;
+                    helperInput.addEventListener('change', () => {
+                        lightState.showHelpers = helperInput.checked;
+                        updateLightObjects(lightState);
+                    });
+                    helperToggle.appendChild(helperInput);
+                    helperToggle.appendChild(document.createTextNode('Show'));
+
+                    const splineToggle = document.createElement('label');
+                    splineToggle.className = 'light-checkbox';
+                    const splineInput = document.createElement('input');
+                    splineInput.type = 'checkbox';
+                    splineInput.checked = lightState.showSpline;
+                    splineInput.addEventListener('change', () => {
+                        lightState.showSpline = splineInput.checked;
+                        updateLightObjects(lightState);
+                    });
+                    splineToggle.appendChild(splineInput);
+                    splineToggle.appendChild(document.createTextNode('Spline'));
+
+                    helperRow.row.appendChild(helperToggle);
+                    helperRow.row.appendChild(splineToggle);
+                    body.appendChild(helperRow.row);
+                }
+
+                card.appendChild(body);
+                list.appendChild(card);
+            });
+        }
+
+        function ensureSceneLightingPanel() {
+            if (!document.getElementById('scene-lighting-panel')) {
+                createSceneLightingPanel();
+            }
+        }
+
         function createSessionPanel() {
             const existing = document.getElementById('scene-session-panel');
             if (existing) existing.remove();
@@ -6742,8 +7738,10 @@
             createSignFlipPanel();
             createSessionPanel();
             createSceneAlignmentPanel();
+            createSceneLightingPanel();
             ensureDefaultSession();
             ensureSceneAlignmentPanel();
+            ensureSceneLightingPanel();
             ensureSessionPanel();
 
             // Setup event handlers
@@ -6762,6 +7760,7 @@
 
             // Safety: ensure the sessions/alignment panel exists even if earlier init bailed
             setTimeout(ensureSceneAlignmentPanel, 0);
+            setTimeout(ensureSceneLightingPanel, 0);
             setTimeout(ensureSessionPanel, 0);
         });
     </script>
