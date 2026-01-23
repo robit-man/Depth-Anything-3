@@ -25,8 +25,10 @@
         };
         const deriveDefaultBase = () => {
             const host = (window.location && window.location.hostname) ? window.location.hostname : 'localhost';
-            // Default to http with API on port 5000
-            return `http://${host || 'localhost'}:5000`;
+            const protocol = (window.location && window.location.protocol) ? window.location.protocol : 'http:';
+            const safeProtocol = protocol === 'https:' ? 'https:' : 'http:';
+            // Default to same protocol with API on port 5000
+            return `${safeProtocol}//${host || 'localhost'}:5000`;
         };
         let API_BASE = normalizeBase(
             queryApiBase ||
@@ -53,8 +55,7 @@
             const candidates = [];
             if (API_BASE) candidates.push(API_BASE);
 
-            const host = (window.location && window.location.hostname) ? window.location.hostname : 'localhost';
-            const fallback = normalizeBase(`http://${host || 'localhost'}:5000`);
+            const fallback = normalizeBase(deriveDefaultBase());
             if (!candidates.includes(fallback)) candidates.push(fallback);
 
             for (const base of candidates) {
